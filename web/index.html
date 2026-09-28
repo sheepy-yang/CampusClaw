@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CampusClaw · 教研材料库</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 登录视图 -->
+<section id="login-view" class="login-wrap" hidden>
+  <form id="login-form" class="login-card" autocomplete="off">
+    <div class="brand">
+      <span class="brand-mark">CC</span>
+      <div>
+        <h1>CampusClaw</h1>
+        <p>中小学教研智能体 · 教研材料库</p>
+      </div>
+    </div>
+    <label class="field">
+      <span>用户名</span>
+      <input id="login-username" name="username" required autofocus placeholder="teacher3 / student3 …">
+    </label>
+    <label class="field">
+      <span>密码</span>
+      <input id="login-password" name="password" type="password" required placeholder="请输入密码">
+    </label>
+    <button class="btn btn-primary btn-block" type="submit">登 录</button>
+    <p id="login-error" class="login-error" hidden></p>
+    <p class="login-hint">演示账号见 README · 身份与班级由服务端会话识别</p>
+  </form>
+</section>
+
+<!-- 主应用 -->
+<section id="app-view" hidden>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand-mark small">CC</span>
+      <div class="brand-text">
+        <strong>CampusClaw</strong>
+        <span id="me-class" class="me-class"></span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <input id="search-input" class="search" type="search" placeholder="搜索本班材料（标题/正文）…">
+      <button id="btn-view" class="icon-btn" title="切换列表/网格视图">▤</button>
+      <button id="btn-theme" class="icon-btn" title="切换浅色/深色">🌙</button>
+      <button id="btn-cmd" class="icon-btn" title="命令面板 (Ctrl/⌘+K)">⌘</button>
+      <button id="btn-upload" class="btn btn-primary" hidden>上传材料</button>
+      <span id="me-user" class="me-user"></span>
+      <button id="btn-logout" class="btn btn-ghost">登出</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div class="content-head">
+      <h2 id="list-title">本班材料</h2>
+      <span id="list-count" class="list-count"></span>
+    </div>
+    <div id="materials" class="materials list-view"></div>
+    <div id="empty-hint" class="empty-hint" hidden>暂无材料，或当前搜索没有命中。</div>
+  </main>
+</section>
+
+<!-- 上传弹窗 -->
+<div id="upload-modal" class="modal-mask" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3>上传教研材料</h3>
+      <button class="icon-btn" data-close="upload-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-tip">仅支持 <code>.txt</code> / <code>.md</code>，UTF-8 文本，不超过 2 MiB。<br>
+      上传后正文自动写入本班知识库。</p>
+      <input id="upload-file" type="file" accept=".txt,.md">
+      <div class="progress-wrap" hidden>
+        <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+        <span id="progress-text">0%</span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close="upload-modal">取消</button>
+      <button id="upload-submit" class="btn btn-primary">开始上传</button>
+    </div>
+  </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div id="detail-modal" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h3 id="detail-title">材料详情</h3>
+      <div>
+        <a id="detail-download" class="btn btn-ghost" href="#" download>下载原文</a>
+        <button class="icon-btn" data-close="detail-modal">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <p id="detail-meta" class="detail-meta"></p>
+      <div id="detail-content" class="markdown-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 命令面板 -->
+<div id="cmd-palette" class="cmd-mask" hidden>
+  <div class="cmd-box">
+    <input id="cmd-input" type="text" placeholder="输入命令或关键字…">
+    <ul id="cmd-list" class="cmd-list"></ul>
+  </div>
+</div>
+
+<div id="toast-stack" class="toast-stack"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

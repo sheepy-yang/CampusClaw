@@ -1,0 +1,30 @@
+# CampusClaw 迭代 1：单服务 + named volume
+# 课件参考栈是 web+api+db 三容器；本栈因 D1 单进程同源 + SQLite 文件库自然收敛为单服务，
+# 理由与等价性见 openspec/changes/add-auth-rbac-class-knowledge/design.md D12。
+services:
+  web:
+    build: .
+    image: campusclaw:iter1
+    container_name: campusclaw
+    # .env 注入 SESSION_SECRET 与种子口令；缺失则容器内 python run.py 退出码 1（D6 仍然成立）
+    env_file:
+      - .env
+    # compose 的 environment 优先级高于 env_file，强制容器内监听 0.0.0.0
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5000
+    ports:
+      - "5000:5000"
+    # 持久化：down 不删 volume；down -v 才清空。volume 承载 campusclaw.db 与 uploads/
+    volumes:
+      - campusclaw-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  campusclaw-data:
