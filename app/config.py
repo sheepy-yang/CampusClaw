@@ -36,6 +36,13 @@ def _load_dotenv() -> None:
             os.environ[key] = value
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return int(raw)
+
+
 @dataclass(frozen=True)
 class Config:
     session_secret: str
@@ -45,6 +52,25 @@ class Config:
     max_upload_bytes: int
     login_max_failures: int
     login_window_seconds: int
+    qdrant_url: str
+    embedding_base_url: str
+    embedding_api_key: str
+    embedding_model: str
+    embedding_dim: int
+    chat_base_url: str
+    chat_api_key: str
+    chat_model: str
+
+    def embedding_configured(self) -> bool:
+        return bool(
+            self.embedding_base_url
+            and self.embedding_api_key
+            and self.embedding_model
+            and self.embedding_dim > 0
+        )
+
+    def chat_configured(self) -> bool:
+        return bool(self.chat_base_url and self.chat_api_key and self.chat_model)
 
     @staticmethod
     def load(*, require_secret: bool = True) -> "Config":
@@ -64,4 +90,12 @@ class Config:
             max_upload_bytes=int(os.environ.get("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))),
             login_max_failures=int(os.environ.get("LOGIN_MAX_FAILURES", "5")),
             login_window_seconds=int(os.environ.get("LOGIN_WINDOW_SECONDS", "900")),
+            qdrant_url=os.environ.get("QDRANT_URL", "http://127.0.0.1:6333").strip().rstrip("/"),
+            embedding_base_url=os.environ.get("EMBEDDING_BASE_URL", "").strip().rstrip("/"),
+            embedding_api_key=os.environ.get("EMBEDDING_API_KEY", "").strip(),
+            embedding_model=os.environ.get("EMBEDDING_MODEL", "").strip(),
+            embedding_dim=_env_int("EMBEDDING_DIM", 0),
+            chat_base_url=os.environ.get("CHAT_BASE_URL", "").strip().rstrip("/"),
+            chat_api_key=os.environ.get("CHAT_API_KEY", "").strip(),
+            chat_model=os.environ.get("CHAT_MODEL", "").strip(),
         )

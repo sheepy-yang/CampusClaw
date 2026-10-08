@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS knowledge_entries (
 
 CREATE INDEX IF NOT EXISTS idx_materials_class ON materials(class_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id  INTEGER NOT NULL REFERENCES materials(id),
+    class_id     INTEGER NOT NULL REFERENCES classes(id),
+    chunk_index  INTEGER NOT NULL,
+    chunk_text   TEXT NOT NULL,
+    char_start   INTEGER NOT NULL,
+    char_end     INTEGER NOT NULL,
+    embed_status TEXT NOT NULL DEFAULT 'failed'
+                 CHECK (embed_status IN ('ready', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_class ON knowledge_chunks(class_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_material ON knowledge_chunks(material_id);
 """
 
 

@@ -11,17 +11,23 @@ import sqlite3
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timedelta, timezone
-from http import HTTPStatus
-from http.cookies import SimpleCookie
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import security
+from .chunking import StrategyError
 from .config import Config, TMP_DIR, UPLOAD_DIR, WEB_DIR
 from .db import get_connection
+from .retrieval import (
+    RetrievalUnavailable,
+    ask as ask_question,
+    index_material,
+    parse_strategy_request,
+    reindex_material,
+    search as search_knowledge,
+)
 
-COOKIE_NAME = "cc_session"
 ALLOWED_EXT = {".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8"}
 
 SECURITY_HEADERS = {
@@ -155,14 +161,21 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 会话 ----
 
-    def _cookies(self) -> dict[str, str]:
-        jar = SimpleCookie(self.headers.get("Cookie", ""))
-        return {k: morsel.value for k, morsel in jar.items()}
+    def _bearer_token(self) -> str | None:
+        header = self.headers.get("Authorization", "")
+        scheme, _, rest = header.partition(" ")
+        if scheme.lower() != "bearer":
+            return None
+        token = rest.strip()
+        return token or None
 
     def current_user(self) -> sqlite3.Row | None:
-        """每请求从库重读 user/role/class；会话过期或不存在返回 None。"""
-        token = self._cookies().get(COOKIE_NAME)
+        """校验 Bearer JWT，再按 token 哈希从库重读 user/role/class。"""
+        token = self._bearer_token()
         if not token:
+            return None
+        payload = security.decode_access_token(token, self.config.session_secret)
+        if payload is None:
             return None
         conn = get_connection()
         try:
@@ -183,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
         if row is None:
             return None
         if row["expires_at"] <= utcnow().isoformat():
+            return None
+        if payload.get("user_id") != row["id"]:
             return None
         return row
 
@@ -236,6 +251,12 @@ class Handler(BaseHTTPRequestHandler):
                 })
             return
 
+        if path == "/api/search":
+            user = self.require_user()
+            if user:
+                self._handle_search(user)
+            return
+
         m = re.fullmatch(r"/api/materials(?:/(\d+)(?:/(file))?)?", path)
         if path == "/api/materials":
             user = self.require_user()
@@ -278,6 +299,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._handle_upload(user)
             return
+        if path == "/api/ask":
+            user = self.require_user()
+            if user:
+                self._handle_ask(user)
+            return
+        reindex = re.fullmatch(r"/api/materials/(\d+)/reindex", path)
+        if reindex:
+            user = self.require_user()
+            if not user:
+                return
+            if user["role"] != "teacher":
+                self.send_json(403, {"error": "仅教师可重建索引"})
+                return
+            self._handle_reindex(user, int(reindex.group(1)))
+            return
 
         self.send_empty(404)
 
@@ -319,33 +355,38 @@ class Handler(BaseHTTPRequestHandler):
                 self._login_failed()
                 return
 
-            # 成功：建会话
+            # 成功：签发 JWT，库存哈希以便登出即失效
             self.limiter.reset(key)
-            token, token_hash = security.new_session_token()
-            now = utcnow()
-            expires = now + timedelta(seconds=self.config.session_ttl_seconds)
+            token, exp_unix = security.issue_access_token(
+                self.config.session_secret,
+                user_id=row["id"],
+                username=row["username"],
+                role=row["role"],
+                class_id=row["class_id"],
+                ttl_seconds=self.config.session_ttl_seconds,
+            )
+            expires = datetime.fromtimestamp(exp_unix, timezone.utc)
             conn.execute(
                 "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)",
-                (token_hash, row["id"], now.isoformat(), expires.isoformat()),
+                (security.hash_token(token), row["id"], utcnow().isoformat(), expires.isoformat()),
             )
             class_row = conn.execute("SELECT name FROM classes WHERE id = ?", (row["class_id"],)).fetchone()
         finally:
             conn.close()
 
-        cookie = (
-            f"{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax; "
-            f"Max-Age={self.config.session_ttl_seconds}"
-        )
         self.send_json(200, {
+            "token": token,
+            "token_type": "Bearer",
+            "expires_in": self.config.session_ttl_seconds,
             "username": row["username"], "role": row["role"],
             "class_id": row["class_id"], "class_name": class_row["name"],
-        }, {"Set-Cookie": cookie})
+        })
 
     def _login_failed(self):
         self.send_json(401, {"error": "用户名或密码错误"})
 
     def _handle_logout(self):
-        token = self._cookies().get(COOKIE_NAME)
+        token = self._bearer_token()
         if token:
             conn = get_connection()
             try:
@@ -353,7 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                              (security.hash_token(token),))
             finally:
                 conn.close()
-        self.send_empty(204, {"Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"})
+        self.send_empty(204)
 
     # ---- 材料：列表 / 详情 / 下载 ----
 
@@ -489,6 +530,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(422, {"error": "文件内容必须为 UTF-8 文本"})
             return
 
+        try:
+            strategy, strategy_options = parse_strategy_request(_form_fields(parts))
+        except StrategyError as exc:
+            self.send_json(422, {"error": str(exc)})
+            return
+
         title = Path(original_name).stem[:200] or "未命名"
         tmp_path = TMP_DIR / security.new_session_token()[0]
         tmp_path.write_bytes(raw)
@@ -509,11 +556,12 @@ class Handler(BaseHTTPRequestHandler):
             stored_name = f"{material_id}{ext}"
             conn.execute("UPDATE materials SET stored_name = ? WHERE id = ?",
                          (stored_name, material_id))
-            conn.execute(
+            entry_cur = conn.execute(
                 """INSERT INTO knowledge_entries (material_id, class_id, content, created_at)
                    VALUES (?,?,?,?)""",
                 (material_id, user["class_id"], content, now),
             )
+            entry_id = entry_cur.lastrowid
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -538,10 +586,105 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": "文件保存失败"})
             return
 
+        stats = index_material(
+            self.config,
+            material_id=material_id,
+            class_id=user["class_id"],
+            entry_id=entry_id,
+            body_text=content,
+            strategy=strategy,
+            options=strategy_options,
+        )
         self.send_json(201, {
             "id": material_id, "title": title, "original_name": original_name,
             "size_bytes": len(raw), "content_type": ALLOWED_EXT[ext],
+            "chunks_total": stats["chunks_total"],
+            "chunks_failed": stats["chunks_failed"],
+            "chunks_ready": stats["chunks_ready"],
         })
+
+    def _handle_search(self, user: sqlite3.Row):
+        # 查询串和请求头里的班级编号解析后丢弃，只使用会话班级
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        query.pop("class_id", None)
+        query.pop("classId", None)
+        _ = self.headers.get("X-Class-Id")
+        q = query.get("q", [""])[0]
+        mode = query.get("mode", ["hybrid"])[0]
+        try:
+            result = search_knowledge(self.config, int(user["class_id"]), q, mode)
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        except RetrievalUnavailable:
+            self.send_json(503, {"error": "服务暂时不可用"})
+            return
+        self.send_json(200, result)
+
+    def _handle_ask(self, user: sqlite3.Row):
+        data = self.read_json()
+        if not isinstance(data, dict):
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        data.pop("class_id", None)
+        data.pop("classId", None)
+        _ = self.headers.get("X-Class-Id")
+        question = data.get("question") if isinstance(data.get("question"), str) else ""
+        if not question.strip() and isinstance(data.get("q"), str):
+            question = data["q"]
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        try:
+            result = ask_question(self.config, int(user["class_id"]), question, messages)
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        except RetrievalUnavailable:
+            self.send_json(503, {"error": "服务暂时不可用"})
+            return
+        self.send_json(200, result)
+
+    def _handle_reindex(self, user: sqlite3.Row, material_id: int):
+        raw_len = int(self.headers.get("Content-Length") or 0)
+        data = self.read_json()
+        if raw_len and not isinstance(data, dict):
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        data = data or {}
+        try:
+            strategy, options = parse_strategy_request(data)
+        except StrategyError as exc:
+            self.send_json(422, {"error": str(exc)})
+            return
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                """
+                SELECT ke.id AS entry_id, ke.content AS content
+                FROM materials m
+                JOIN knowledge_entries ke ON ke.material_id = m.id
+                WHERE m.id = ? AND m.class_id = ?
+                """,
+                (material_id, user["class_id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            self.send_json(404, {"error": "未找到材料"})
+            return
+        try:
+            stats = reindex_material(
+                self.config,
+                material_id=material_id,
+                class_id=int(user["class_id"]),
+                entry_id=row["entry_id"],
+                body_text=row["content"],
+                strategy=strategy,
+                options=options,
+            )
+        except RetrievalUnavailable:
+            self.send_json(503, {"error": "服务暂时不可用"})
+            return
+        self.send_json(200, {"id": material_id, "strategy": strategy, **stats})
 
     # ---- 静态 ----
 
@@ -561,6 +704,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def client_ip(self) -> str:
         return self.client_address[0]
+
+
+def _form_fields(parts: dict[str, dict]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for name, part in parts.items():
+        if name == "file" or part.get("filename"):
+            continue
+        try:
+            fields[name] = part.get("data", b"").decode("utf-8").strip()
+        except UnicodeDecodeError:
+            fields[name] = ""
+    return fields
 
 
 def build_server(config: Config) -> ThreadingHTTPServer:

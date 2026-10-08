@@ -16,6 +16,7 @@ sys.path.insert(0, str(BASE_DIR))
 from app.config import DB_PATH, UPLOAD_DIR, TMP_DIR  # noqa: E402
 from app.db import create_schema, get_connection  # noqa: E402
 from app.security import hash_password  # noqa: E402
+from corpus import EXTRA_MATERIALS  # noqa: E402
 
 CLASSES = [(1, "高一(3)班"), (2, "高一(4)班")]
 
@@ -38,6 +39,7 @@ MATERIALS = [
     (2, "teacher4", "高一4班-数学-函数概念知识点.txt", "高一4班-数学-函数概念知识点",
      "函数概念知识点（高一4班·数学）\n\n一、函数的定义\n  设 A、B 是非空数集，若按某种对应关系 f，对 A 中任意 x，\n  B 中都有唯一确定的 y 与之对应，则称 f: A→B 为函数。\n\n二、三要素\n  定义域、对应关系、值域。\n\n三、区间表示\n  开区间 (a,b)、闭区间 [a,b]、半开区间 [a,b)。\n\n练习：求 f(x)=1/(x-1) 的定义域。\n"),
 ]
+MATERIALS.extend(EXTRA_MATERIALS)
 
 
 def main():
@@ -74,38 +76,88 @@ def main():
             )
             username_id[username] = cur.lastrowid
 
-        # 材料：两表同行 + 原文件落盘，存储名 <id><ext>
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
-        for class_id, uploader, filename, title, content in MATERIALS:
-            ext = Path(filename).suffix
-            cur = conn.execute(
-                """INSERT INTO materials
-                   (class_id, uploader_id, title, original_name, stored_name,
-                    size_bytes, content_type, created_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (class_id, username_id[uploader], title, filename, "",
-                 len(content.encode("utf-8")),
-                 "text/markdown; charset=utf-8" if ext == ".md" else "text/plain; charset=utf-8",
-                 now),
-            )
-            mid = cur.lastrowid
-            stored = f"{mid}{ext}"
-            conn.execute("UPDATE materials SET stored_name=? WHERE id=?", (stored, mid))
-            conn.execute(
-                "INSERT INTO knowledge_entries (material_id, class_id, content, created_at) VALUES (?,?,?,?)",
-                (mid, class_id, content, now),
-            )
-            (UPLOAD_DIR / stored).write_text(content, encoding="utf-8")
+        insert_materials(conn, username_id, now, MATERIALS)
     finally:
         conn.close()
+
+    from app.retrieval import backfill_unchunked
+    backfill_unchunked(Config.load())
 
     print(f"✓ 初始化完成: {DB_PATH}")
     print("  班级: 高一(3)班 / 高一(4)班")
     print("  账号: teacher3 / student3 / teacher4 / student4")
-    print("  材料: 4 份（两班各 2 份，标题含班级可区分）")
+    print(f"  材料: {len(MATERIALS)} 份（标题含班级，可按班区分）")
     print("  启动: python run.py")
 
 
+def insert_materials(conn, username_id: dict[str, int], now: str, materials) -> int:
+    """两表同行并落盘。返回新插入的份数。"""
+    added = 0
+    for class_id, uploader, filename, title, content in materials:
+        ext = Path(filename).suffix
+        cur = conn.execute(
+            """INSERT INTO materials
+               (class_id, uploader_id, title, original_name, stored_name,
+                size_bytes, content_type, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (class_id, username_id[uploader], title, filename, "",
+             len(content.encode("utf-8")),
+             "text/markdown; charset=utf-8" if ext == ".md" else "text/plain; charset=utf-8",
+             now),
+        )
+        mid = cur.lastrowid
+        stored = f"{mid}{ext}"
+        conn.execute("UPDATE materials SET stored_name=? WHERE id=?", (stored, mid))
+        conn.execute(
+            "INSERT INTO knowledge_entries (material_id, class_id, content, created_at) VALUES (?,?,?,?)",
+            (mid, class_id, content, now),
+        )
+        (UPLOAD_DIR / stored).write_text(content, encoding="utf-8")
+        added += 1
+    return added
+
+
+def expand_existing() -> None:
+    """把种子中尚未入库的材料补进现有库，不删除账号、会话和已有材料。"""
+    from datetime import datetime, timezone
+
+    from app.config import Config
+    from app.retrieval import backfill_unchunked, retry_failed_chunks
+
+    Config.load()
+    if not DB_PATH.exists():
+        raise SystemExit(f"数据库不存在（{DB_PATH}）。请先运行：python scripts/init_db.py")
+    create_schema()
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    conn = get_connection()
+    try:
+        have = {row["original_name"] for row in conn.execute("SELECT original_name FROM materials")}
+        users = {
+            row["username"]: row["id"]
+            for row in conn.execute("SELECT id, username FROM users")
+        }
+        missing = [item for item in MATERIALS if item[2] not in have]
+        now = datetime.now(timezone.utc).isoformat()
+        added = insert_materials(conn, users, now, missing) if missing else 0
+    finally:
+        conn.close()
+    from app.vector_store import VectorStore, VectorUnavailable
+
+    config = Config.load()
+    try:
+        VectorStore(config).ensure_collection()
+    except VectorUnavailable as exc:
+        print(f"[QDRANT] 集合未就绪，新切片会保持 failed: {exc}")
+    backfill_unchunked(config)
+    ready = retry_failed_chunks(config)
+    print(f"✓ 已补入 {added} 份材料，重新嵌入成功 {ready} 个切片")
+
+
 if __name__ == "__main__":
-    main()
+    if "--expand" in sys.argv:
+        expand_existing()
+    else:
+        main()

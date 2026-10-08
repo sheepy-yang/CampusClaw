@@ -19,12 +19,21 @@ const els = {
   toastStack: $("#toast-stack"),
 };
 
-const state = { me: null, materials: [], view: "list", cmdActive: 0, cmdItems: [] };
+const state = {
+  me: null, materials: [], view: "list", cmdActive: 0, cmdItems: [],
+  detailId: null, searchMode: "hybrid", askMessages: [],
+};
+const TOKEN_KEY = "cc_token";
 
 /* ---------------- API ---------------- */
 
+function authHeaders() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  return token ? { Authorization: "Bearer " + token } : {};
+}
+
 async function api(method, url, body) {
-  const opts = { method, headers: {}, credentials: "same-origin" };
+  const opts = { method, headers: authHeaders() };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -34,6 +43,7 @@ async function api(method, url, body) {
   let data = null;
   try { data = await res.json(); } catch (_) { /* 非 JSON */ }
   if (res.status === 401 && url !== "/api/login") {
+    localStorage.removeItem(TOKEN_KEY);
     showLogin();
     return { ok: false, status: 401, data };
   }
@@ -53,9 +63,13 @@ function showApp(me) {
   state.me = me;
   els.loginView.hidden = true;
   els.appView.hidden = false;
-  els.meClass.textContent = `${me.class_name} · ${me.role === "teacher" ? "教师" : "学生"}`;
+  const role = me.role === "teacher" ? "教师" : "学生";
+  els.meClass.textContent = `${me.class_name} · ${role}`;
   els.meUser.innerHTML = `${escapeHtml(me.username)}`;
+  $("#knowledge-title").textContent = `${me.class_name}知识问答`;
+  $("#knowledge-me").textContent = `${me.username} · ${role}`;
   els.btnUpload.hidden = me.role !== "teacher";
+  showMaterials();
   loadMaterials();
 }
 
@@ -67,7 +81,8 @@ els.loginForm.addEventListener("submit", async (e) => {
   const username = $("#login-username").value.trim();
   const password = $("#login-password").value;
   const r = await api("POST", "/api/login", { username, password });
-  if (r.ok) {
+  if (r.ok && r.data && r.data.token) {
+    localStorage.setItem(TOKEN_KEY, r.data.token);
     $("#login-password").value = "";
     showApp(r.data);
   } else {
@@ -76,10 +91,13 @@ els.loginForm.addEventListener("submit", async (e) => {
   }
 });
 
-$("#btn-logout").addEventListener("click", async () => {
+async function logout() {
   await api("POST", "/api/logout");
+  localStorage.removeItem(TOKEN_KEY);
   showLogin();
-});
+}
+$("#btn-logout").addEventListener("click", logout);
+$("#btn-logout-knowledge").addEventListener("click", logout);
 
 /* ---------------- 材料列表 ---------------- */
 
@@ -143,14 +161,39 @@ async function openDetail(id) {
     return;
   }
   const m = r.data;
+  state.detailId = m.id;
+  $("#reindex-bar").hidden = !(state.me && state.me.role === "teacher");
   els.detailTitle.textContent = m.title;
   els.detailMeta.textContent =
     `${m.original_name} · ${fmtSize(m.size_bytes)} · 上传者 ${m.uploader} · ${fmtDate(m.created_at)}`;
   els.detailContent.innerHTML = renderMarkdown(m.content);
-  els.detailDownload.href = `/api/materials/${m.id}/file`;
-  els.detailDownload.setAttribute("download", m.original_name);
+  els.detailDownload.dataset.url = `/api/materials/${m.id}/file`;
+  els.detailDownload.dataset.name = m.original_name;
+  els.detailDownload.href = "#";
   els.detailModal.hidden = false;
 }
+
+els.detailDownload.addEventListener("click", async (e) => {
+  e.preventDefault();
+  const url = els.detailDownload.dataset.url;
+  const name = els.detailDownload.dataset.name || "download";
+  if (!url) return;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    showLogin();
+    return;
+  }
+  if (!res.ok) { toast("下载失败", "err"); return; }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -256,7 +299,8 @@ els.uploadSubmit.addEventListener("click", () => {
   if (!file) { toast("请先选择 .txt / .md 文件", "err"); return; }
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "/api/materials");
-  xhr.withCredentials = true;
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) xhr.setRequestHeader("Authorization", "Bearer " + token);
   els.progressWrap.hidden = false;
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) {
@@ -268,6 +312,12 @@ els.uploadSubmit.addEventListener("click", () => {
   xhr.onload = () => {
     let data = {};
     try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      els.uploadModal.hidden = true;
+      showLogin();
+      return;
+    }
     if (xhr.status === 201) {
       toast(`《${data.title}》上传成功，已入知识库`, "ok");
       els.uploadModal.hidden = true;
@@ -279,7 +329,32 @@ els.uploadSubmit.addEventListener("click", () => {
   xhr.onerror = () => toast("网络错误，上传失败", "err");
   const fd = new FormData();
   fd.append("file", file);
+  const strategy = $("#upload-strategy").value;
+  fd.append("strategy", strategy);
+  if (strategy === "custom") {
+    fd.append("max_len", $("#upload-maxlen").value);
+    fd.append("overlap", $("#upload-overlap").value);
+    fd.append("sep", $("#upload-sep").value);
+    if ($("#upload-remove-urls").checked) fd.append("remove_urls", "true");
+    if ($("#upload-collapse").checked) fd.append("collapse_ws", "true");
+  }
   xhr.send(fd);
+});
+
+$("#upload-strategy").addEventListener("change", () => {
+  $("#custom-fields").hidden = $("#upload-strategy").value !== "custom";
+});
+
+$("#btn-reindex").addEventListener("click", async () => {
+  if (!state.detailId) return;
+  const r = await api("POST", `/api/materials/${state.detailId}/reindex`, {
+    strategy: $("#reindex-strategy").value,
+  });
+  if (r.ok) {
+    toast(`索引已重建，切片 ${r.data.chunks_total}，失败 ${r.data.chunks_failed}`, "ok");
+  } else {
+    toast((r.data && r.data.error) || "重建失败", "err");
+  }
 });
 
 /* ---------------- 主题 / 视图 ---------------- */
@@ -306,6 +381,7 @@ function buildCommands() {
     { name: "🔍 聚焦搜索", hint: "/", run: () => els.search.focus() },
     { name: "🌓 切换深浅色", hint: "theme", run: () => $("#btn-theme").click() },
     { name: "▤ 切换列表/网格", hint: "view", run: () => $("#btn-view").click() },
+    { name: "💬 知识问答", hint: "ask", run: () => showKnowledge("ask") },
     { name: "🚪 登出", hint: "logout", run: () => $("#btn-logout").click() },
   ];
   if (state.me && state.me.role === "teacher") {
@@ -373,6 +449,137 @@ function toast(msg, kind = "") {
   els.toastStack.appendChild(div);
   setTimeout(() => { div.style.opacity = "0"; setTimeout(() => div.remove(), 250); }, 3200);
 }
+
+/* ---------------- 知识检索 / 问答 ---------------- */
+
+function showMaterials() {
+  $("#materials-topbar").hidden = false;
+  $("#knowledge-topbar").hidden = true;
+  $("#materials-panel").hidden = false;
+  $("#knowledge-panel").hidden = true;
+}
+
+function showKnowledge(tab) {
+  if (!state.me) return;
+  $("#materials-topbar").hidden = true;
+  $("#knowledge-topbar").hidden = false;
+  $("#materials-panel").hidden = true;
+  $("#knowledge-panel").hidden = false;
+  setKnowledgeTab(tab || "ask");
+}
+
+function setKnowledgeTab(tab) {
+  const ask = tab !== "search";
+  $("#tab-ask").classList.toggle("active", ask);
+  $("#tab-search").classList.toggle("active", !ask);
+  $("#ask-pane").hidden = !ask;
+  $("#search-pane").hidden = ask;
+}
+
+$("#btn-knowledge").addEventListener("click", () => showKnowledge("ask"));
+$("#btn-back-materials").addEventListener("click", showMaterials);
+$("#tab-ask").addEventListener("click", () => setKnowledgeTab("ask"));
+$("#tab-search").addEventListener("click", () => setKnowledgeTab("search"));
+$("#btn-clear-ask").addEventListener("click", () => {
+  state.askMessages = [];
+  $("#ask-thread").innerHTML = "";
+});
+
+document.querySelectorAll(".mode-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    state.searchMode = btn.dataset.mode;
+    document.querySelectorAll(".mode-btn").forEach((el) => {
+      el.classList.toggle("active", el === btn);
+    });
+  });
+});
+
+function renderMarked(text) {
+  return escapeHtml(text).replace(/\[(\d+)\]/g, '<span class="cite-mark">[$1]</span>');
+}
+
+function citationHtml(item, order) {
+  const n = order + 1;
+  return `
+    <li>
+      <button type="button" class="cite-link" data-id="${item.material_id}">
+        ${n}. [${n}] ${escapeHtml(item.material_title)} 切片 ${item.chunk_index} · 偏移 ${item.char_start}–${item.char_end}
+      </button>
+      <p class="cite-excerpt">${escapeHtml(item.excerpt || "")}</p>
+    </li>`;
+}
+
+function bindMaterialLinks(root) {
+  root.querySelectorAll("[data-id]").forEach((node) => {
+    node.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openDetail(Number(node.dataset.id));
+    });
+  });
+}
+
+$("#search-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#retrieval-q").value.trim();
+  if (!q) return;
+  const r = await api("GET", "/api/search?q=" + encodeURIComponent(q) + "&mode=" + encodeURIComponent(state.searchMode));
+  const box = $("#retrieval-results");
+  if (!r.ok) {
+    box.innerHTML = `<p class="ask-hint">${escapeHtml((r.data && r.data.error) || "检索失败")}</p>`;
+    return;
+  }
+  const hits = (r.data && r.data.hits) || [];
+  if (!hits.length) {
+    box.innerHTML = `<p class="ask-hint">没有命中本班切片。</p>`;
+    return;
+  }
+  box.innerHTML = hits.map((hit) => `
+    <article class="hit-card" data-id="${hit.material_id}">
+      <div class="hit-title">${escapeHtml(hit.material_title)}</div>
+      <div class="hit-meta">切片 ${hit.chunk_index} · 偏移 ${hit.char_start}–${hit.char_end}</div>
+      <p class="hit-excerpt">${escapeHtml(hit.excerpt || "")}</p>
+    </article>`).join("");
+  bindMaterialLinks(box);
+});
+
+$("#ask-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#ask-input");
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = "";
+  const thread = $("#ask-thread");
+  const pending = document.createElement("div");
+  pending.className = "msg-user";
+  pending.innerHTML = `<div class="msg-label">你</div><div class="bubble">${escapeHtml(question)}</div>`;
+  thread.appendChild(pending);
+  const r = await api("POST", "/api/ask", { question, messages: state.askMessages });
+  const card = document.createElement("div");
+  card.className = "answer-card";
+  if (!r.ok) {
+    card.innerHTML = `<div class="answer-label">暂时无法回答</div><div class="answer-body">${escapeHtml((r.data && r.data.error) || "服务暂时不可用")}</div>`;
+  } else {
+    const citations = r.data.citations || [];
+    card.innerHTML = `
+      <div class="answer-label">依据回答</div>
+      <div class="answer-body">${renderMarked(r.data.answer || "")}</div>
+      ${citations.length ? `<ol class="citations">${citations.map(citationHtml).join("")}</ol>` : ""}`;
+    state.askMessages.push({ role: "user", content: question });
+    state.askMessages.push({ role: "assistant", content: r.data.answer || "" });
+    if (state.askMessages.length > 6) state.askMessages = state.askMessages.slice(-6);
+  }
+  thread.appendChild(card);
+  bindMaterialLinks(card);
+  card.scrollIntoView({ block: "nearest" });
+});
+
+$("#ask-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $("#ask-form").requestSubmit();
+  }
+});
 
 /* ---------------- 启动：以 /api/me 为准 ---------------- */
 

@@ -1,11 +1,19 @@
-# CampusClaw 迭代 1：单服务 + named volume
-# 课件参考栈是 web+api+db 三容器；本栈因 D1 单进程同源 + SQLite 文件库自然收敛为单服务，
-# 理由与等价性见 openspec/changes/add-auth-rbac-class-knowledge/design.md D12。
+# CampusClaw：web + Qdrant。Qdrant 端口不映射到宿主机。
+# 关系库仍是容器内 SQLite（迭代 1 D12）；向量只进 Qdrant，正文不进 payload。
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    container_name: campusclaw-qdrant
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
   web:
     build: .
     image: campusclaw:iter1
     container_name: campusclaw
+    depends_on:
+      - qdrant
     # .env 注入 SESSION_SECRET 与种子口令；缺失则容器内 python run.py 退出码 1（D6 仍然成立）
     env_file:
       - .env
@@ -13,6 +21,7 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=5000
+      - QDRANT_URL=http://qdrant:6333
     ports:
       - "5000:5000"
     # 持久化：down 不删 volume；down -v 才清空。volume 承载 campusclaw.db 与 uploads/
@@ -28,3 +37,4 @@ services:
 
 volumes:
   campusclaw-data:
+  qdrant-data:

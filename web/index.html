@@ -34,7 +34,7 @@
 
 <!-- 主应用 -->
 <section id="app-view" hidden>
-  <header class="topbar">
+  <header id="materials-topbar" class="topbar">
     <div class="topbar-left">
       <span class="brand-mark small">CC</span>
       <div class="brand-text">
@@ -47,19 +47,70 @@
       <button id="btn-view" class="icon-btn" title="切换列表/网格视图">▤</button>
       <button id="btn-theme" class="icon-btn" title="切换浅色/深色">🌙</button>
       <button id="btn-cmd" class="icon-btn" title="命令面板 (Ctrl/⌘+K)">⌘</button>
+      <button id="btn-knowledge" class="btn">知识问答</button>
       <button id="btn-upload" class="btn btn-primary" hidden>上传材料</button>
       <span id="me-user" class="me-user"></span>
       <button id="btn-logout" class="btn btn-ghost">登出</button>
     </div>
   </header>
 
-  <main class="content">
+  <header id="knowledge-topbar" class="topbar knowledge-topbar" hidden>
+    <div class="topbar-left knowledge-brand">
+      <div>
+        <div class="wordmark">CAMPUSCLAW</div>
+        <h1 id="knowledge-title">知识问答</h1>
+        <div id="knowledge-me" class="me-class"></div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-clear-ask" class="icon-btn" title="清空对话" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="8"></circle>
+          <path d="M12 8v5l3 2"></path>
+        </svg>
+      </button>
+      <button id="btn-back-materials" class="btn" type="button">材料</button>
+      <button id="btn-logout-knowledge" class="btn btn-primary" type="button">登出</button>
+    </div>
+  </header>
+
+  <main id="materials-panel" class="content">
     <div class="content-head">
       <h2 id="list-title">本班材料</h2>
       <span id="list-count" class="list-count"></span>
     </div>
     <div id="materials" class="materials list-view"></div>
     <div id="empty-hint" class="empty-hint" hidden>暂无材料，或当前搜索没有命中。</div>
+  </main>
+
+  <main id="knowledge-panel" class="content knowledge-page" hidden>
+    <div class="qa-tabs" role="tablist">
+      <button id="tab-search" class="qa-tab" type="button">知识检索</button>
+      <button id="tab-ask" class="qa-tab active" type="button">知识问答</button>
+    </div>
+
+    <section id="search-pane" hidden>
+      <p class="ask-hint">在本班已入库切片中检索。关键字只查正文；向量与混合在嵌入或向量库不可用时会提示服务暂不可用。</p>
+      <div class="mode-switch" role="tablist">
+        <button class="mode-btn" type="button" data-mode="keyword">关键字</button>
+        <button class="mode-btn" type="button" data-mode="vector">向量</button>
+        <button class="mode-btn active" type="button" data-mode="hybrid">混合</button>
+      </div>
+      <form id="search-form" class="ask-form">
+        <input id="retrieval-q" type="search" placeholder="输入要查找的内容" required>
+        <button class="btn btn-primary" type="submit">检索</button>
+      </form>
+      <div id="retrieval-results" class="hit-list"></div>
+    </section>
+
+    <section id="ask-pane">
+      <p class="ask-hint">每个问题先在本班做混合检索，取前 4 条切片再生成简短回答，并标出 [1]、[2]。没有命中时不调用模型，直接说明资料里没有。</p>
+      <div id="ask-thread" class="ask-thread"></div>
+      <form id="ask-form" class="ask-form">
+        <textarea id="ask-input" rows="2" placeholder="输入问题，Enter 发送" required></textarea>
+        <button class="btn btn-primary" type="submit">发送</button>
+      </form>
+    </section>
   </main>
 </section>
 
@@ -74,6 +125,31 @@
       <p class="modal-tip">仅支持 <code>.txt</code> / <code>.md</code>，UTF-8 文本，不超过 2 MiB。<br>
       上传后正文自动写入本班知识库。</p>
       <input id="upload-file" type="file" accept=".txt,.md">
+      <label class="field">
+        <span>切分策略</span>
+        <select id="upload-strategy">
+          <option value="auto">自动窗口（800 字 / 重叠 80）</option>
+          <option value="hierarchy">按标题分章</option>
+          <option value="custom">自定义分隔符</option>
+        </select>
+      </label>
+      <div id="custom-fields" class="custom-fields" hidden>
+        <label class="field"><span>最大长度 max_len</span>
+          <input id="upload-maxlen" type="number" min="100" max="2000" value="300">
+        </label>
+        <label class="field"><span>重叠 overlap（0–50，表示百分比）</span>
+          <input id="upload-overlap" type="number" min="0" max="50" value="0">
+        </label>
+        <label class="field"><span>分隔符</span>
+          <select id="upload-sep">
+            <option value="句号">句号</option>
+            <option value="换行">换行</option>
+            <option value="空行">空行</option>
+          </select>
+        </label>
+        <label class="check"><input id="upload-remove-urls" type="checkbox"> 移除 URL 与邮箱</label>
+        <label class="check"><input id="upload-collapse" type="checkbox"> 折叠连续空白</label>
+      </div>
       <div class="progress-wrap" hidden>
         <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
         <span id="progress-text">0%</span>
@@ -98,6 +174,13 @@
     </div>
     <div class="modal-body">
       <p id="detail-meta" class="detail-meta"></p>
+      <div id="reindex-bar" class="reindex-bar" hidden>
+        <select id="reindex-strategy">
+          <option value="auto">自动窗口</option>
+          <option value="hierarchy">按标题分章</option>
+        </select>
+        <button id="btn-reindex" class="btn" type="button">重建索引</button>
+      </div>
       <div id="detail-content" class="markdown-body"></div>
     </div>
   </div>

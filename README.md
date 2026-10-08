@@ -149,8 +149,54 @@ python scripts/verify.py
 | `POST /api/materials` | 会话+教师 | 上传入库（413/415/422） |
 | `GET /health` | 无 | 存活，不查库 |
 
-## Non-goals（本迭代明确不做）
+## Non-goals（迭代 1 明确不做）
 
-向量检索 / RAG 问答、超级管理员、注册改密、课表与提醒、Nginx 反代 / 多副本 / HTTPS 生产部署。
-Docker Compose 单实例本迭代交付（见 `design.md` D12）；多副本与 HTTPS 不做。
+超级管理员、注册改密、课表与提醒、Nginx 反代 / 多副本 / HTTPS 生产部署。
+Docker Compose 单实例交付（见 `design.md` D12）；多副本与 HTTPS 不做。
 维护说明：材料数据可直接用 SQLite 客户端查 `data/campusclaw.db`；重置种子重跑 `python scripts/init_db.py`（容器内由 CMD 仅在首次启动时执行）。
+
+## 迭代 2：可追溯检索与知识问答
+
+在迭代 1 的登录、角色和班级隔离之上，材料会切成切片。教师和学生可以在本班资料里检索，并基于命中切片提问。回答带 `[1]`、`[2]`，出处可以打开对应材料。资料里没有依据时返回「资料中未找到相关内容」，并且不会调用对话模型。
+
+规约：[`openspec/changes/add-traceable-vector-retrieval/`](openspec/changes/add-traceable-vector-retrieval/)
+
+### 检索与降级
+
+| 模式 | 行为 |
+|---|---|
+| `keyword` | 只在本班 `ready` 切片正文里按词元计数，不调用嵌入，不访问 Qdrant |
+| `vector` | 问句嵌入后按余弦检索，低于 0.35 的候选丢弃 |
+| `hybrid`（默认） | 两路各自过滤后按名次做 RRF（k=60） |
+
+嵌入网关或 Qdrant 不可用时，`vector` 与 `hybrid` 返回 `503 {"error":"服务暂时不可用"}`，不编造分数。`keyword` 不受影响。问答走 hybrid：没有命中就不调用对话网关；对话网关故障同样是 503，不编造回答。
+
+班级只认登录会话。请求里另带的 `class_id` 会被丢掉。跨班检索是 `200` 和空结果，不会用 403/404 暗示其他班有这份内容。
+
+### 配置
+
+在 `.env` 中增加（模板见 `.env.example`）：
+
+- `QDRANT_URL`
+- `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` / `EMBEDDING_DIM`
+- `CHAT_BASE_URL` / `CHAT_API_KEY` / `CHAT_MODEL`
+
+密钥只留在服务端。更换嵌入模型后，需要对材料执行重建索引。
+
+```bash
+docker compose up --build
+# Qdrant 不映射端口：宿主机访问 6333 会被拒绝
+curl http://127.0.0.1:5000/health
+```
+
+### 新增接口
+
+| 方法与路径 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/search?q=&mode=` | 学生 / 教师 | `keyword` / `vector` / `hybrid`，默认 hybrid |
+| `POST /api/ask` | 学生 / 教师 | 混合检索前 4 条后生成带引用的回答 |
+| `POST /api/materials/{id}/reindex` | 教师（本班） | 按本次策略删旧切片与旧向量后重建 |
+
+上传接口可额外带 `strategy`（`auto` / `custom` / `hierarchy`）。未指定时按 auto：800 字窗口、80 字重叠。响应含 `chunks_total` 与 `chunks_failed`。
+
+页面入口：登录后点「知识问答」。检索结果和回答里的出处都可以打开本班材料。
