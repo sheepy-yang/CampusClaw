@@ -17,24 +17,28 @@ from reportlab.platypus import (
     Spacer, Table, TableStyle,
 )
 
-# --- 字体：macOS 自带 PingFang / 苹方 ---
+# --- 字体：macOS STHeiti 中文字体 ---
 FONT_CANDIDATES = [
-    "/System/Library/Fonts/PingFang.ttc",
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/Library/Fonts/Arial Unicode.ttf",
+    # (名称, 路径, subfontIndex)
+    ("STHeiti", "/System/Library/Fonts/STHeiti Light.ttc", 0),
+    ("STHeitiM", "/System/Library/Fonts/STHeiti Medium.ttc", 0),
+    ("ArialUnicode", "/Library/Fonts/Arial Unicode.ttf", None),
 ]
-FONT_NAME = "PingFangSC"
-registered = False
-for cand in FONT_CANDIDATES:
-    if Path(cand).exists():
-        try:
-            pdfmetrics.registerFont(TTFont(FONT_NAME, cand))
-            registered = True
-            break
-        except Exception:
-            continue
-if not registered:
+FONT_NAME = "STHeiti"
+for name, path, idx in FONT_CANDIDATES:
+    try:
+        if idx is not None:
+            pdfmetrics.registerFont(TTFont(name, path, subfontIndex=idx))
+        else:
+            pdfmetrics.registerFont(TTFont(name, path))
+        FONT_NAME = name
+        print(f"[FONT] 注册成功: {name} → {path}")
+        break
+    except Exception:
+        continue
+else:
     FONT_NAME = "Helvetica"
+    print("[FONT] 未找到可用中文字体，回退 Helvetica")
 
 # --- 样式 ---
 styles = getSampleStyleSheet()
