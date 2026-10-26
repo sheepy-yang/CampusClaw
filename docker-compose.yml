@@ -1,4 +1,4 @@
-# CampusClaw：web + Qdrant。Qdrant 端口不映射到宿主机。
+# CampusClaw：web + Qdrant + 自建 mcp-demo（第 6 课）。Qdrant 端口不映射到宿主机。
 # 关系库仍是容器内 SQLite（迭代 1 D12）；向量只进 Qdrant，正文不进 payload。
 services:
   qdrant:
@@ -8,12 +8,27 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
+  # 自建 MCP 服务器（JSON-RPC 2.0）。令牌只经 .env / env_file 注入，不进镜像层。
+  mcp-demo:
+    build: ./mcp-server
+    image: campusclaw-mcp:wk6
+    container_name: campusclaw-mcp
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8090
+    ports:
+      - "8090:8090"   # 映射到宿主机便于单独验收（/health、tools/list）
+    restart: unless-stopped
+
   web:
     build: .
     image: campusclaw:iter1
     container_name: campusclaw
     depends_on:
       - qdrant
+      - mcp-demo
     # .env 注入 SESSION_SECRET 与种子口令；缺失则容器内 python run.py 退出码 1（D6 仍然成立）
     env_file:
       - .env

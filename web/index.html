@@ -47,6 +47,7 @@
       <button id="btn-view" class="icon-btn" title="切换列表/网格视图">▤</button>
       <button id="btn-theme" class="icon-btn" title="切换浅色/深色">🌙</button>
       <button id="btn-cmd" class="icon-btn" title="命令面板 (Ctrl/⌘+K)">⌘</button>
+      <button id="btn-admin" class="btn" hidden>管理台</button>
       <button id="btn-knowledge" class="btn">知识问答</button>
       <button id="btn-upload" class="btn btn-primary" hidden>上传材料</button>
       <span id="me-user" class="me-user"></span>
@@ -71,6 +72,20 @@
       </button>
       <button id="btn-back-materials" class="btn" type="button">材料</button>
       <button id="btn-logout-knowledge" class="btn btn-primary" type="button">登出</button>
+    </div>
+  </header>
+
+  <header id="admin-topbar" class="topbar knowledge-topbar" hidden>
+    <div class="topbar-left knowledge-brand">
+      <div>
+        <div class="wordmark">CAMPUSCLAW</div>
+        <h1>管理台 · MCP 与技能</h1>
+        <div id="admin-me" class="me-class"></div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-admin-back" class="btn" type="button">材料</button>
+      <button id="btn-logout-admin" class="btn btn-primary" type="button">登出</button>
     </div>
   </header>
 
@@ -105,11 +120,100 @@
 
     <section id="ask-pane">
       <p class="ask-hint">每个问题先在本班做混合检索，取前 4 条切片再生成简短回答，并标出 [1]、[2]。没有命中时不调用模型，直接说明资料里没有。</p>
+      <div class="ask-app-row">
+        <label for="ask-app">AI 应用</label>
+        <select id="ask-app">
+          <option value="">默认（不选应用）</option>
+        </select>
+      </div>
+      <div id="ask-tools" class="ask-tools" hidden></div>
       <div id="ask-thread" class="ask-thread"></div>
       <form id="ask-form" class="ask-form">
         <textarea id="ask-input" rows="2" placeholder="输入问题，Enter 发送" required></textarea>
         <button class="btn btn-primary" type="submit">发送</button>
       </form>
+    </section>
+  </main>
+
+  <main id="admin-panel" class="content" hidden>
+    <section class="admin-section">
+      <h2>MCP 服务器</h2>
+      <form id="server-form" class="admin-form" autocomplete="off">
+        <label class="field"><span>名称</span>
+          <input id="server-name" required placeholder="如 campus-tools">
+        </label>
+        <label class="field"><span>Base URL</span>
+          <input id="server-url" required placeholder="http://mcp-demo:8090">
+        </label>
+        <label class="field"><span>访问令牌</span>
+          <input id="server-token" type="password" placeholder="可选">
+          <small class="field-tip">令牌只存服务端</small>
+        </label>
+        <button id="btn-server-add" class="btn btn-primary" type="submit">登记服务器</button>
+      </form>
+      <div class="table-scroll">
+        <table id="server-table" class="admin-table">
+          <thead>
+            <tr><th>名称</th><th>Base URL</th><th>状态</th><th>工具数</th><th>最近错误</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="admin-section">
+      <h2>技能</h2>
+      <form id="skill-form" class="admin-form" autocomplete="off">
+        <label class="field"><span>名称</span>
+          <input id="skill-name" required placeholder="如 数学公式助手">
+        </label>
+        <label class="field"><span>描述</span>
+          <input id="skill-desc" placeholder="一句话说明这个技能做什么">
+        </label>
+        <label class="field"><span>指令（instructions）</span>
+          <textarea id="skill-instructions" rows="3" placeholder="命中该技能时注入给模型的指令"></textarea>
+        </label>
+        <label class="field"><span>关键词</span>
+          <input id="skill-keywords" placeholder="逗号分隔，如：公式,换算">
+        </label>
+        <div class="field"><span>绑定工具</span>
+          <div id="skill-tools-box" class="skill-tools-box">
+            <label class="skill-tool-item check fixed">
+              <input type="checkbox" checked disabled> knowledge_search（默认检索工具）
+            </label>
+          </div>
+        </div>
+        <button id="btn-skill-add" class="btn btn-primary" type="submit">创建技能</button>
+      </form>
+      <div class="table-scroll">
+        <table id="skill-table" class="admin-table">
+          <thead>
+            <tr><th>名称</th><th>工具</th><th>关键词</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details class="import-box">
+        <summary>批量导入技能（上传 JSON）</summary>
+        <textarea id="skill-import-json" rows="6"
+          placeholder='{"skills":[{"name":"…","tools":["knowledge_search"],"keywords":["…"],"instructions":"…"}]}'></textarea>
+        <button id="btn-skill-import" class="btn btn-primary" type="button">导入</button>
+      </details>
+    </section>
+
+    <section class="admin-section">
+      <div class="admin-head">
+        <h2>调用审计</h2>
+        <button id="btn-audit-refresh" class="btn" type="button">刷新</button>
+      </div>
+      <div class="table-scroll">
+        <table id="audit-table" class="admin-table">
+          <thead>
+            <tr><th>时间</th><th>用户</th><th>工具@服务器</th><th>状态</th><th>详情</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
   </main>
 </section>

@@ -17,11 +17,22 @@ const els = {
   detailDownload: $("#detail-download"),
   cmdPalette: $("#cmd-palette"), cmdInput: $("#cmd-input"), cmdList: $("#cmd-list"),
   toastStack: $("#toast-stack"),
+  askTools: $("#ask-tools"),
+  askApp: $("#ask-app"),
+  btnAdmin: $("#btn-admin"),
+  adminTopbar: $("#admin-topbar"), adminPanel: $("#admin-panel"), adminMe: $("#admin-me"),
+  serverForm: $("#server-form"), serverName: $("#server-name"),
+  serverUrl: $("#server-url"), serverToken: $("#server-token"), serverTable: $("#server-table"),
+  skillForm: $("#skill-form"), skillName: $("#skill-name"), skillDesc: $("#skill-desc"),
+  skillInstr: $("#skill-instructions"), skillKeywords: $("#skill-keywords"),
+  skillToolsBox: $("#skill-tools-box"), skillTable: $("#skill-table"),
+  skillImportJson: $("#skill-import-json"),
+  auditTable: $("#audit-table"),
 };
 
 const state = {
   me: null, materials: [], view: "list", cmdActive: 0, cmdItems: [],
-  detailId: null, searchMode: "hybrid", askMessages: [],
+  detailId: null, searchMode: "hybrid", askMessages: [], servers: [],
 };
 const TOKEN_KEY = "cc_token";
 
@@ -69,8 +80,20 @@ function showApp(me) {
   $("#knowledge-title").textContent = `${me.class_name}知识问答`;
   $("#knowledge-me").textContent = `${me.username} · ${role}`;
   els.btnUpload.hidden = me.role !== "teacher";
+  els.btnAdmin.hidden = me.role !== "teacher";
   showMaterials();
   loadMaterials();
+  loadApps();
+}
+
+async function loadApps() {
+  const r = await api("GET", "/api/apps");
+  if (!r.ok) return;
+  const current = els.askApp.value;
+  els.askApp.innerHTML = `<option value="">默认（不选应用）</option>`
+    + (r.data || []).map((a) =>
+      `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  if ([...els.askApp.options].some((o) => o.value === current)) els.askApp.value = current;
 }
 
 /* ---------------- 登录 / 登出 ---------------- */
@@ -98,6 +121,7 @@ async function logout() {
 }
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-logout-knowledge").addEventListener("click", logout);
+$("#btn-logout-admin").addEventListener("click", logout);
 
 /* ---------------- 材料列表 ---------------- */
 
@@ -386,6 +410,7 @@ function buildCommands() {
   ];
   if (state.me && state.me.role === "teacher") {
     cmds.splice(2, 0, { name: "⬆️ 上传材料", hint: "upload", run: () => $("#btn-upload").click() });
+    cmds.push({ name: "🛠 管理台", hint: "admin", run: showAdmin });
   }
   return cmds;
 }
@@ -455,16 +480,20 @@ function toast(msg, kind = "") {
 function showMaterials() {
   $("#materials-topbar").hidden = false;
   $("#knowledge-topbar").hidden = true;
+  els.adminTopbar.hidden = true;
   $("#materials-panel").hidden = false;
   $("#knowledge-panel").hidden = true;
+  els.adminPanel.hidden = true;
 }
 
 function showKnowledge(tab) {
   if (!state.me) return;
   $("#materials-topbar").hidden = true;
   $("#knowledge-topbar").hidden = false;
+  els.adminTopbar.hidden = true;
   $("#materials-panel").hidden = true;
   $("#knowledge-panel").hidden = false;
+  els.adminPanel.hidden = true;
   setKnowledgeTab(tab || "ask");
 }
 
@@ -554,24 +583,112 @@ $("#ask-form").addEventListener("submit", async (e) => {
   pending.className = "msg-user";
   pending.innerHTML = `<div class="msg-label">你</div><div class="bubble">${escapeHtml(question)}</div>`;
   thread.appendChild(pending);
-  const r = await api("POST", "/api/ask", { question, messages: state.askMessages });
+
+  // 流式问答：SSE 逐帧渲染，done 后用 renderMarked 对齐并补引用
+  els.askTools.innerHTML = "";
+  els.askTools.hidden = true;
   const card = document.createElement("div");
   card.className = "answer-card";
-  if (!r.ok) {
-    card.innerHTML = `<div class="answer-label">暂时无法回答</div><div class="answer-body">${escapeHtml((r.data && r.data.error) || "服务暂时不可用")}</div>`;
-  } else {
-    const citations = r.data.citations || [];
-    card.innerHTML = `
-      <div class="answer-label">依据回答</div>
-      <div class="answer-body">${renderMarked(r.data.answer || "")}</div>
-      ${citations.length ? `<ol class="citations">${citations.map(citationHtml).join("")}</ol>` : ""}`;
-    state.askMessages.push({ role: "user", content: question });
-    state.askMessages.push({ role: "assistant", content: r.data.answer || "" });
-    if (state.askMessages.length > 6) state.askMessages = state.askMessages.slice(-6);
-  }
+  card.innerHTML = `<div class="answer-label">依据回答</div><div class="answer-body"></div>`;
+  const body = card.querySelector(".answer-body");
+  const label = card.querySelector(".answer-label");
   thread.appendChild(card);
-  bindMaterialLinks(card);
   card.scrollIntoView({ block: "nearest" });
+
+  let res;
+  try {
+    res = await fetch("/api/ask/stream", {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question, messages: state.askMessages,
+        app_id: els.askApp.value ? Number(els.askApp.value) : undefined,
+      }),
+    });
+  } catch (_) {
+    label.textContent = "暂时无法回答";
+    body.textContent = "服务暂时不可用";
+    return;
+  }
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    showLogin();
+    return;
+  }
+  if (!res.ok || !res.body) {
+    let data = null;
+    try { data = await res.json(); } catch (_) { /* 非 JSON */ }
+    label.textContent = "暂时无法回答";
+    body.textContent = (data && data.error) || "服务暂时不可用";
+    return;
+  }
+
+  let errored = false;
+  let buf = "";
+  const finish = (answer, citations) => {
+    body.innerHTML = renderMarked(answer || "");
+    const cits = citations || [];
+    if (cits.length) {
+      card.insertAdjacentHTML("beforeend",
+        `<ol class="citations">${cits.map(citationHtml).join("")}</ol>`);
+      bindMaterialLinks(card);
+    }
+    state.askMessages.push({ role: "user", content: question });
+    state.askMessages.push({ role: "assistant", content: answer || "" });
+    if (state.askMessages.length > 6) state.askMessages = state.askMessages.slice(-6);
+  };
+
+  // 解析一帧：event: <name> + data: <json>
+  const handleFrame = (frame) => {
+    let evt = "message", data = null;
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) evt = line.slice(6).trim();
+      else if (line.startsWith("data:")) {
+        try { data = JSON.parse(line.slice(5).trim()); } catch (_) { data = null; }
+      }
+    }
+    if (evt === "meta" && data) {
+      const badges = [];
+      if (data.app) {
+        badges.push(`<span class="tool-badge st-ok">应用：${escapeHtml(data.app)}</span>`);
+      }
+      if (data.skill) {
+        badges.push(`<span class="tool-badge st-ok">技能：${escapeHtml(data.skill)}</span>`);
+      }
+      (data.tool_calls || []).forEach((tc) => {
+        const cls = tc.status === "ok" ? "st-ok" : tc.status === "denied" ? "st-warn" : "st-err";
+        const mark = tc.status === "ok" ? "✓" : tc.status === "denied" ? "已拒绝" : "失败";
+        badges.push(`<span class="tool-badge ${cls}">🔧 ${escapeHtml(tc.tool)}@${escapeHtml(tc.server || "")} ${mark}</span>`);
+      });
+      els.askTools.innerHTML = badges.join("");
+      els.askTools.hidden = !badges.length;
+    } else if (evt === "delta" && data && data.text) {
+      body.textContent += data.text;
+      card.scrollIntoView({ block: "nearest" });
+    } else if (evt === "error" && data) {
+      errored = true;
+      label.textContent = "暂时无法回答";
+      body.textContent = data.error || "服务暂时不可用";
+    } else if (evt === "done" && data) {
+      if (data.answer) finish(data.answer, data.citations);
+      else if (!errored && !body.textContent) body.textContent = "（本次没有返回内容）";
+    }
+  };
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      handleFrame(buf.slice(0, idx));
+      buf = buf.slice(idx + 2);
+    }
+  }
+  buf += decoder.decode().replace(/\r\n/g, "\n");
+  if (buf.trim()) handleFrame(buf); // 兜底：末尾缺 \n\n 的最后一帧
 });
 
 $("#ask-input").addEventListener("keydown", (e) => {
@@ -580,6 +697,217 @@ $("#ask-input").addEventListener("keydown", (e) => {
     $("#ask-form").requestSubmit();
   }
 });
+
+/* ---------------- 管理台 ---------------- */
+
+async function showAdmin() {
+  if (!state.me) return;
+  $("#materials-topbar").hidden = true;
+  $("#knowledge-topbar").hidden = true;
+  els.adminTopbar.hidden = false;
+  $("#materials-panel").hidden = true;
+  $("#knowledge-panel").hidden = true;
+  els.adminPanel.hidden = false;
+  const role = state.me.role === "teacher" ? "教师" : "学生";
+  els.adminMe.textContent = `${state.me.username} · ${role}`;
+  await loadServers();
+  loadSkills();
+  loadAudit();
+}
+
+async function loadServers() {
+  const r = await api("GET", "/api/mcp/servers");
+  if (!r.ok) return;
+  state.servers = r.data || [];
+  const tb = els.serverTable.querySelector("tbody");
+  if (!state.servers.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="table-empty">还没有登记 MCP 服务器。</td></tr>`;
+    return;
+  }
+  tb.innerHTML = state.servers.map((s) => {
+    const st = s.status === "connected" ? "st-ok" : s.status === "error" ? "st-err" : "st-off";
+    const stText = s.status === "connected" ? "已连接" : s.status === "error" ? "错误" : "未连接";
+    return `
+      <tr>
+        <td>${escapeHtml(s.name)}</td>
+        <td>${escapeHtml(s.base_url)}</td>
+        <td><span class="st ${st}">${stText}</span></td>
+        <td>${s.tool_count || 0}</td>
+        <td class="cell-err">${escapeHtml(s.last_error || "—")}</td>
+        <td class="cell-ops">
+          <button type="button" class="btn btn-mini btn-server-connect" data-id="${s.id}">连接</button>
+          <button type="button" class="btn btn-mini btn-server-disconnect" data-id="${s.id}">断开</button>
+          <button type="button" class="btn btn-mini btn-server-del" data-id="${s.id}">删除</button>
+        </td>
+      </tr>`;
+  }).join("");
+}
+
+// 表格内按钮按 data-id 事件委托
+els.serverTable.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-id]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (btn.classList.contains("btn-server-connect")) {
+    const r = await api("POST", `/api/mcp/servers/${id}/connect`);
+    if (r.ok) toast(`已连接，发现 ${(r.data.tools || []).length} 个工具`, "ok");
+    else toast((r.data && r.data.error) || "连接失败", "err");
+    await loadServers();
+    renderSkillToolbox();
+  } else if (btn.classList.contains("btn-server-disconnect")) {
+    const r = await api("POST", `/api/mcp/servers/${id}/disconnect`);
+    if (r.ok) toast("已断开", "ok");
+    else toast((r.data && r.data.error) || "断开失败", "err");
+    await loadServers();
+    renderSkillToolbox();
+  } else if (btn.classList.contains("btn-server-del")) {
+    if (!confirm("确定删除该 MCP 服务器？")) return;
+    const r = await api("DELETE", `/api/mcp/servers/${id}`);
+    if (r.ok) toast("已删除", "ok");
+    else toast((r.data && r.data.error) || "删除失败", "err");
+    await loadServers();
+    renderSkillToolbox();
+  }
+});
+
+els.serverForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const r = await api("POST", "/api/mcp/servers", {
+    name: els.serverName.value.trim(),
+    base_url: els.serverUrl.value.trim(),
+    auth_token: els.serverToken.value,
+  });
+  if (r.ok) {
+    toast("服务器已登记", "ok");
+    els.serverForm.reset();
+    await loadServers();
+    renderSkillToolbox();
+  } else {
+    toast((r.data && r.data.error) || "登记失败", "err");
+  }
+});
+
+function renderSkillToolbox() {
+  const box = els.skillToolsBox;
+  // 只重建动态部分，保留固定的 knowledge_search 项
+  box.querySelectorAll(".skill-tool-item:not(.fixed), .toolbox-empty").forEach((n) => n.remove());
+  const rows = [];
+  for (const s of state.servers || []) {
+    if (s.status !== "connected") continue;
+    for (const t of s.tools || []) {
+      const ref = `${t.name}@${s.name}`;
+      const desc = t.description ? `<span class="toolbox-desc">· ${escapeHtml(t.description)}</span>` : "";
+      rows.push(`<label class="skill-tool-item check">
+        <input type="checkbox" data-ref="${escapeHtml(ref)}"> ${escapeHtml(ref)} ${desc}
+      </label>`);
+    }
+  }
+  if (!rows.length) {
+    box.insertAdjacentHTML("beforeend",
+      `<p class="toolbox-empty">暂无已连接服务器的工具，可仅用 knowledge_search</p>`);
+  } else {
+    box.insertAdjacentHTML("beforeend", rows.join(""));
+  }
+}
+
+async function loadSkills() {
+  renderSkillToolbox();
+  const r = await api("GET", "/api/skills");
+  if (!r.ok) return;
+  const list = r.data || [];
+  const tb = els.skillTable.querySelector("tbody");
+  if (!list.length) {
+    tb.innerHTML = `<tr><td colspan="4" class="table-empty">还没有创建技能。</td></tr>`;
+    return;
+  }
+  tb.innerHTML = list.map((s) => `
+    <tr>
+      <td>${escapeHtml(s.name)}</td>
+      <td>${escapeHtml((s.tools || []).join("、"))}</td>
+      <td>${escapeHtml((s.keywords || []).join("、"))}</td>
+      <td class="cell-ops"><button type="button" class="btn btn-mini btn-skill-del" data-id="${s.id}">删除</button></td>
+    </tr>`).join("");
+}
+
+els.skillTable.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".btn-skill-del");
+  if (!btn || !confirm("确定删除该技能？")) return;
+  const r = await api("DELETE", `/api/skills/${btn.dataset.id}`);
+  if (r.ok) { toast("技能已删除", "ok"); loadSkills(); }
+  else toast((r.data && r.data.error) || "删除失败", "err");
+});
+
+els.skillForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const tools = ["knowledge_search"];
+  els.skillToolsBox.querySelectorAll("input[data-ref]:checked").forEach((cb) => tools.push(cb.dataset.ref));
+  const keywords = els.skillKeywords.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+  const r = await api("POST", "/api/skills", {
+    name: els.skillName.value.trim(),
+    description: els.skillDesc.value.trim(),
+    instructions: els.skillInstr.value,
+    keywords,
+    tools,
+  });
+  if (r.ok) {
+    toast("技能已创建", "ok");
+    els.skillForm.reset();
+    loadSkills();
+  } else {
+    // 409 重名 / 422 校验失败（绑定工具不存在或服务器未连接）等
+    toast((r.data && r.data.error) || "创建失败", "err");
+  }
+});
+
+$("#btn-skill-import").addEventListener("click", async () => {
+  let payload;
+  try {
+    payload = JSON.parse(els.skillImportJson.value);
+  } catch (_) {
+    toast("JSON 格式错误", "err");
+    return;
+  }
+  if (!payload || !Array.isArray(payload.skills) || !payload.skills.length) {
+    toast('JSON 须为 {"skills": [...]}', "err");
+    return;
+  }
+  const r = await api("POST", "/api/skills/import", payload);
+  if (r.ok) {
+    const d = r.data || {};
+    const skipped = (d.skipped || []).length;
+    toast(`导入完成：新建 ${d.created || 0} 条${skipped ? `，跳过 ${skipped} 条同名` : ""}`, "ok");
+    els.skillImportJson.value = "";
+    loadSkills();
+  } else {
+    toast((r.data && r.data.error) || "导入失败", "err");
+  }
+});
+
+async function loadAudit() {
+  const r = await api("GET", "/api/mcp/audit");
+  if (!r.ok) return;
+  const list = r.data || [];
+  const tb = els.auditTable.querySelector("tbody");
+  if (!list.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="table-empty">暂无调用记录。</td></tr>`;
+    return;
+  }
+  tb.innerHTML = list.map((a) => {
+    const st = a.status === "ok" ? "st-ok" : a.status === "denied" ? "st-warn" : "st-err";
+    const stText = a.status === "ok" ? "成功" : a.status === "denied" ? "已拒绝" : "错误";
+    return `
+      <tr>
+        <td>${fmtDate(a.created_at)}</td>
+        <td>${escapeHtml(a.username || "")}</td>
+        <td>${escapeHtml(`${a.tool}@${a.server_name || ""}`)}</td>
+        <td><span class="st ${st}">${stText}</span></td>
+        <td class="cell-err">${escapeHtml(a.detail || "—")}</td>
+      </tr>`;
+  }).join("");
+}
+$("#btn-audit-refresh").addEventListener("click", loadAudit);
+els.btnAdmin.addEventListener("click", showAdmin);
+$("#btn-admin-back").addEventListener("click", showMaterials);
 
 /* ---------------- 启动：以 /api/me 为准 ---------------- */
 

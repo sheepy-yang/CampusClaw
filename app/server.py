@@ -19,13 +19,27 @@ from . import security
 from .chunking import StrategyError
 from .config import Config, TMP_DIR, UPLOAD_DIR, WEB_DIR
 from .db import get_connection
+from .mcpclient import McpError, connect_and_discover
+from .openapi_spec import spec as openapi_spec
 from .retrieval import (
+    ASK_TOP,
+    NOT_FOUND,
     RetrievalUnavailable,
+    _clean_history as clean_ask_history,
+    align_citations,
     ask as ask_question,
+    build_chat_messages,
+    chat_stream,
+    hybrid_search,
     index_material,
     parse_strategy_request,
     reindex_material,
     search as search_knowledge,
+)
+from .skills import (
+    parse_str_list,
+    run_skill_tools,
+    validate_tool_refs,
 )
 
 ALLOWED_EXT = {".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8"}
@@ -222,6 +236,12 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             self._db_failure(exc)
 
+    def do_DELETE(self):  # noqa: N802
+        try:
+            return self._route_delete()
+        except sqlite3.Error as exc:
+            self._db_failure(exc)
+
     def do_HEAD(self):  # noqa: N802
         if self.path in ("/", "/index.html"):
             self._serve_static("/")
@@ -274,6 +294,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._material_detail(user, material_id)
             return
 
+        # ---- 第 6 课：MCP 管理 / 技能 / 文档 ----
+        if path == "/api/mcp/servers":
+            user = self._require_teacher()
+            if user:
+                self._list_servers(user)
+            return
+        m = re.fullmatch(r"/api/mcp/servers/(\d+)/tools", path)
+        if m:
+            user = self._require_teacher()
+            if user:
+                self._list_server_tools(user, int(m.group(1)))
+            return
+        if path == "/api/mcp/audit":
+            user = self._require_teacher()
+            if user:
+                self._list_audit(user)
+            return
+        if path == "/api/skills":
+            user = self._require_teacher()
+            if user:
+                self._list_skills(user)
+            return
+        if path == "/api/apps":
+            user = self.require_user()
+            if user:
+                self._list_apps(user)
+            return
+        if path == "/openapi.json":
+            self.send_json(200, openapi_spec)
+            return
+        if path == "/docs":
+            self._serve_swagger()
+            return
+
         # 静态资源（白名单，禁止目录穿越，不含 /uploads）
         if path in ("/", "/index.html", "/static/style.css", "/static/app.js"):
             self._serve_static(path)
@@ -304,6 +358,40 @@ class Handler(BaseHTTPRequestHandler):
             if user:
                 self._handle_ask(user)
             return
+        if path == "/api/ask/stream":
+            user = self.require_user()
+            if user:
+                self._handle_ask_stream(user)
+            return
+
+        # ---- 第 6 课：MCP 管理 / 技能 ----
+        if path == "/api/mcp/servers":
+            user = self._require_teacher()
+            if user:
+                self._register_server(user)
+            return
+        m = re.fullmatch(r"/api/mcp/servers/(\d+)/(connect|disconnect)", path)
+        if m:
+            user = self._require_teacher()
+            if user:
+                self._toggle_server(user, int(m.group(1)), m.group(2) == "connect")
+            return
+        if path == "/api/skills":
+            user = self._require_teacher()
+            if user:
+                self._create_skill(user)
+            return
+        if path == "/api/apps":
+            user = self._require_teacher()
+            if user:
+                self._create_app(user)
+            return
+        if path == "/api/skills/import":
+            user = self._require_teacher()
+            if user:
+                self._import_skills(user)
+            return
+
         reindex = re.fullmatch(r"/api/materials/(\d+)/reindex", path)
         if reindex:
             user = self.require_user()
@@ -316,6 +404,39 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.send_empty(404)
+
+    def _route_delete(self):
+        path = urllib.parse.urlparse(self.path).path
+        m = re.fullmatch(r"/api/mcp/servers/(\d+)", path)
+        if m:
+            user = self._require_teacher()
+            if user:
+                self._delete_server(user, int(m.group(1)))
+            return
+        m = re.fullmatch(r"/api/skills/(\d+)", path)
+        if m:
+            user = self._require_teacher()
+            if user:
+                self._delete_skill(user, int(m.group(1)))
+            return
+        m = re.fullmatch(r"/api/apps/(\d+)", path)
+        if m:
+            user = self._require_teacher()
+            if user:
+                self._delete_app(user, int(m.group(1)))
+            return
+        self.send_empty(404)
+
+    # ---- 角色门槛 ----
+
+    def _require_teacher(self):
+        user = self.require_user()
+        if user is None:
+            return None
+        if user["role"] != "teacher":
+            self.send_json(403, {"error": "仅教师可执行此操作"})
+            return None
+        return user
 
     # ---- 登录 / 登出 ----
 
@@ -622,10 +743,37 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def _handle_ask(self, user: sqlite3.Row):
-        data = self.read_json()
-        if not isinstance(data, dict):
+        data, question, messages = self._parse_ask_body()
+        if data is None:
             self.send_json(400, {"error": "请求格式错误"})
             return
+        # 命中技能则先带令牌调用其 MCP 工具（含审计），结果只作为数据
+        try:
+            _skill, tool_calls, tool_data = run_skill_tools(
+                self.config, int(user["class_id"]), user, question)
+        except Exception as exc:
+            print(f"[SKILL] 编排失败（不阻断问答）: {exc!r}")
+            tool_calls, tool_data = [], []
+        try:
+            system_prompt, app_name = self._pick_app(user, data)
+            print(f"[ASK] app_id={data.get('app_id')} 应用={app_name or '默认'} "
+                  f"提示词模板={'自定义' if system_prompt else '默认'}")
+            result = ask_question(self.config, int(user["class_id"]), question,
+                                  messages, tool_data=tool_data,
+                                  system_prompt=system_prompt)
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        except RetrievalUnavailable:
+            self.send_json(503, {"error": "服务暂时不可用"})
+            return
+        result["tool_calls"] = tool_calls
+        self.send_json(200, result)
+
+    def _parse_ask_body(self) -> tuple[dict | None, str, list]:
+        data = self.read_json()
+        if not isinstance(data, dict):
+            return None, "", []
         data.pop("class_id", None)
         data.pop("classId", None)
         _ = self.headers.get("X-Class-Id")
@@ -633,15 +781,530 @@ class Handler(BaseHTTPRequestHandler):
         if not question.strip() and isinstance(data.get("q"), str):
             question = data["q"]
         messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        return data, question, messages
+
+    def _handle_ask_stream(self, user: sqlite3.Row):
+        data, question, messages = self._parse_ask_body()
+        if data is None or not question.strip():
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        class_id = int(user["class_id"])
         try:
-            result = ask_question(self.config, int(user["class_id"]), question, messages)
-        except ValueError as exc:
-            self.send_json(400, {"error": str(exc)})
-            return
+            skill, tool_calls, tool_data = run_skill_tools(
+                self.config, class_id, user, question)
+        except Exception as exc:
+            print(f"[SKILL] 编排失败（不阻断问答）: {exc!r}")
+            skill, tool_calls, tool_data = None, [], []
+        system_prompt, app_name = self._pick_app(user, data)
+        print(f"[ASK] app_id={data.get('app_id')} 应用={app_name or '默认'} "
+              f"提示词模板={'自定义' if system_prompt else '默认'}")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        for k, v in SECURITY_HEADERS.items():
+            if k != "Content-Security-Policy":
+                self.send_header(k, v)
+        self.end_headers()
+
+        def sse(event: str, obj: dict):
+            frame = (f"event: {event}\n"
+                     f"data: {json.dumps(obj, ensure_ascii=False)}\n\n")
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
+
+        try:
+            # meta 先行：技能与工具调用状态（含 denied）在这里可见
+            sse("meta", {
+                "skill": skill["name"] if skill else None,
+                "tool_calls": tool_calls,
+                "app": app_name,
+            })
+            hits = hybrid_search(self.config, class_id, question, limit=ASK_TOP)
         except RetrievalUnavailable:
-            self.send_json(503, {"error": "服务暂时不可用"})
+            sse("error", {"error": "服务暂时不可用"})
+            sse("done", {"answer": "", "citations": []})
             return
-        self.send_json(200, result)
+
+        if not hits:
+            sse("delta", {"text": NOT_FOUND})
+            sse("done", {"answer": NOT_FOUND, "citations": []})
+            return
+        if not self.config.chat_configured():
+            sse("error", {"error": "对话网关未配置"})
+            sse("done", {"answer": "", "citations": []})
+            return
+
+        history = clean_ask_history(messages, question)
+        prompt_messages = build_chat_messages(question, hits, history, tool_data,
+                                              system_prompt=system_prompt)
+        buf: list[str] = []
+        try:
+            for piece in chat_stream(self.config, prompt_messages):
+                buf.append(piece)
+                sse("delta", {"text": piece})
+        except RetrievalUnavailable as exc:
+            sse("error", {"error": str(exc)})
+            sse("done", {"answer": "".join(buf), "citations": []})
+            return
+        answer, citations = align_citations("".join(buf), hits)
+        sse("done", {"answer": answer, "citations": citations})
+
+    # ---- AI 应用（提示词模板） ----
+
+    def _pick_app(self, user: sqlite3.Row, data: dict) -> tuple[str | None, str | None]:
+        """按请求里的 app_id 取本班应用提示词模板；未选/不存在/他班返回 (None, None)。"""
+        raw = data.get("app_id")
+        try:
+            app_id = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            return None, None
+        if app_id <= 0:
+            return None, None
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT name, system_prompt FROM ai_apps WHERE id = ? AND class_id = ?",
+                (app_id, user["class_id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None, None
+        return row["system_prompt"], row["name"]
+
+    def _list_apps(self, user: sqlite3.Row):
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, name, description, system_prompt, created_at"
+                " FROM ai_apps WHERE class_id = ? ORDER BY id",
+                (user["class_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        self.send_json(200, [dict(row) for row in rows])
+
+    def _create_app(self, user: sqlite3.Row):
+        data = self.read_json()
+        if not isinstance(data, dict):
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        name = data.get("name") if isinstance(data.get("name"), str) else ""
+        name = name.strip()
+        if not name or len(name) > 64:
+            self.send_json(400, {"error": "应用名称必填（≤64 字符）"})
+            return
+        description = data.get("description") if isinstance(data.get("description"), str) else ""
+        system_prompt = data.get("system_prompt") if isinstance(data.get("system_prompt"), str) else ""
+        if not system_prompt.strip():
+            self.send_json(400, {"error": "提示词模板（system_prompt）必填"})
+            return
+        conn = get_connection()
+        try:
+            dup = conn.execute(
+                "SELECT 1 FROM ai_apps WHERE class_id = ? AND name = ?",
+                (user["class_id"], name),
+            ).fetchone()
+            if dup:
+                self.send_json(409, {"error": f"已存在同名应用：{name}"})
+                return
+            now = utcnow().isoformat()
+            cur = conn.execute(
+                """INSERT INTO ai_apps
+                   (class_id, name, description, system_prompt, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (user["class_id"], name, description.strip(),
+                 system_prompt.strip(), now),
+            )
+            app_id = cur.lastrowid
+        finally:
+            conn.close()
+        self.send_json(201, {
+            "id": app_id, "name": name, "description": description.strip(),
+            "system_prompt": system_prompt.strip(), "created_at": now,
+        })
+
+    def _delete_app(self, user: sqlite3.Row, app_id: int):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM ai_apps WHERE id = ? AND class_id = ?",
+                (app_id, user["class_id"]),
+            ).fetchone()
+            if row is None:
+                self.send_json(404, {"error": "未找到应用"})
+                return
+            conn.execute("DELETE FROM ai_apps WHERE id = ?", (app_id,))
+        finally:
+            conn.close()
+        self.send_empty(204)
+
+    # ---- 技能批量导入 ----
+
+    def _import_skills(self, user: sqlite3.Row):
+        data = self.read_json()
+        if not isinstance(data, dict) or not isinstance(data.get("skills"), list):
+            self.send_json(400, {"error": "请求体须为 {\"skills\": [...]}"})
+            return
+        items = data["skills"]
+        if not items or len(items) > 50:
+            self.send_json(400, {"error": "skills 须为 1~50 条"})
+            return
+        parsed = []
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                self.send_json(422, {"error": f"第 {index} 条不是对象"})
+                return
+            name = item.get("name") if isinstance(item.get("name"), str) else ""
+            name = name.strip()
+            if not name or len(name) > 64:
+                self.send_json(422, {"error": f"第 {index} 条名称缺失或超长"})
+                return
+            try:
+                tools = parse_str_list(item.get("tools"), "工具")
+                keywords = parse_str_list(item.get("keywords"), "关键词")
+                validate_tool_refs(int(user["class_id"]), tools)
+            except ValueError as exc:
+                self.send_json(422, {"error": f"第 {index} 条：{exc}"})
+                return
+            description = item.get("description") if isinstance(item.get("description"), str) else ""
+            instructions = item.get("instructions") if isinstance(item.get("instructions"), str) else ""
+            parsed.append((name, description.strip(), tools,
+                           instructions.strip(), keywords))
+        created = 0
+        skipped: list[str] = []
+        conn = get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            now = utcnow().isoformat()
+            for name, description, tools, instructions, keywords in parsed:
+                dup = conn.execute(
+                    "SELECT 1 FROM skills WHERE class_id = ? AND name = ?",
+                    (user["class_id"], name),
+                ).fetchone()
+                if dup:
+                    skipped.append(name)
+                    continue
+                conn.execute(
+                    """INSERT INTO skills
+                       (class_id, name, description, tools, instructions,
+                        keywords, created_by, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (user["class_id"], name, description,
+                     json.dumps(tools, ensure_ascii=False), instructions,
+                     json.dumps(keywords, ensure_ascii=False),
+                     user["id"], now, now),
+                )
+                created += 1
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        self.send_json(201, {"created": created, "skipped": skipped})
+
+    # ---- 第 6 课：MCP 服务器管理 ----
+
+    def _list_servers(self, user: sqlite3.Row):
+        """本班登记的服务器；响应绝不回显 auth_token。"""
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT s.id, s.name, s.base_url, s.status, s.last_error, s.created_at,
+                       (SELECT COUNT(*) FROM mcp_tools t WHERE t.server_id = s.id) AS tool_count
+                FROM mcp_servers s
+                WHERE s.class_id = ?
+                ORDER BY s.id
+                """,
+                (user["class_id"],),
+            ).fetchall()
+            tools = conn.execute(
+                """SELECT t.server_id, t.name, t.description
+                   FROM mcp_tools t
+                   JOIN mcp_servers s ON s.id = t.server_id
+                   WHERE t.class_id = ? ORDER BY t.id""",
+                (user["class_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        tools_by_server: dict[int, list] = {}
+        for t in tools:
+            tools_by_server.setdefault(t["server_id"], []).append(
+                {"name": t["name"], "description": t["description"]})
+        payload = []
+        for row in rows:
+            item = dict(row)
+            item["tools"] = tools_by_server.get(row["id"], [])
+            payload.append(item)
+        self.send_json(200, payload)
+
+    def _register_server(self, user: sqlite3.Row):
+        data = self.read_json()
+        if not isinstance(data, dict):
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        name = data.get("name") if isinstance(data.get("name"), str) else ""
+        base_url = data.get("base_url") if isinstance(data.get("base_url"), str) else ""
+        token = data.get("auth_token") if isinstance(data.get("auth_token"), str) else ""
+        name, base_url, token = name.strip(), base_url.strip().rstrip("/"), token.strip()
+        if not name or len(name) > 64 or "@" in name or any(c.isspace() for c in name):
+            self.send_json(400, {"error": "名称必填（≤64 字符，不含空格与 @）"})
+            return
+        if not base_url.startswith(("http://", "https://")):
+            self.send_json(400, {"error": "Base URL 必须以 http:// 或 https:// 开头"})
+            return
+        conn = get_connection()
+        try:
+            dup = conn.execute(
+                "SELECT 1 FROM mcp_servers WHERE class_id = ? AND name = ?",
+                (user["class_id"], name),
+            ).fetchone()
+            if dup:
+                self.send_json(409, {"error": f"已存在同名服务器：{name}"})
+                return
+            cur = conn.execute(
+                """INSERT INTO mcp_servers
+                   (class_id, name, base_url, auth_token, status, created_by, created_at)
+                   VALUES (?,?,?,?, 'disconnected', ?, ?)""",
+                (user["class_id"], name, base_url, token, user["id"], utcnow().isoformat()),
+            )
+            server_id = cur.lastrowid
+        finally:
+            conn.close()
+        self.send_json(201, {
+            "id": server_id, "name": name, "base_url": base_url,
+            "status": "disconnected", "tool_count": 0, "tools": [],
+        })
+
+    def _fetch_server(self, user: sqlite3.Row, server_id: int) -> sqlite3.Row | None:
+        """id + 会话班级联合查询；跨班与不存在同形 404。"""
+        conn = get_connection()
+        try:
+            return conn.execute(
+                "SELECT * FROM mcp_servers WHERE id = ? AND class_id = ?",
+                (server_id, user["class_id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _toggle_server(self, user: sqlite3.Row, server_id: int, connect: bool):
+        server = self._fetch_server(user, server_id)
+        if server is None:
+            self.send_json(404, {"error": "未找到 MCP 服务器"})
+            return
+        if connect:
+            try:
+                tools = connect_and_discover(server["base_url"], server["auth_token"])
+            except McpError as exc:
+                message = f"连接失败：{exc}"
+                conn = get_connection()
+                try:
+                    conn.execute(
+                        "UPDATE mcp_servers SET status = 'error', last_error = ? WHERE id = ?",
+                        (str(exc), server_id),
+                    )
+                    conn.execute("DELETE FROM mcp_tools WHERE server_id = ?", (server_id,))
+                finally:
+                    conn.close()
+                self.send_json(502, {"error": message})
+                return
+            conn = get_connection()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE mcp_servers SET status = 'connected', last_error = NULL WHERE id = ?",
+                    (server_id,),
+                )
+                conn.execute("DELETE FROM mcp_tools WHERE server_id = ?", (server_id,))
+                for tool in tools:
+                    conn.execute(
+                        """INSERT INTO mcp_tools
+                           (server_id, class_id, tool_name, description, input_schema)
+                           VALUES (?,?,?,?,?)""",
+                        (server_id, user["class_id"], tool["name"],
+                         tool["description"],
+                         json.dumps(tool["input_schema"], ensure_ascii=False)),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+            print(f"[MCP] 已连接 {server['name']} ({server['base_url']})，发现 {len(tools)} 个工具")
+            self.send_json(200, {
+                "id": server_id, "name": server["name"],
+                "base_url": server["base_url"], "status": "connected",
+                "tool_count": len(tools), "tools": tools,
+            })
+        else:
+            conn = get_connection()
+            try:
+                conn.execute(
+                    "UPDATE mcp_servers SET status = 'disconnected', last_error = NULL WHERE id = ?",
+                    (server_id,),
+                )
+                conn.execute("DELETE FROM mcp_tools WHERE server_id = ?", (server_id,))
+            finally:
+                conn.close()
+            self.send_json(200, {
+                "id": server_id, "name": server["name"],
+                "base_url": server["base_url"], "status": "disconnected",
+                "tool_count": 0, "tools": [],
+            })
+
+    def _delete_server(self, user: sqlite3.Row, server_id: int):
+        server = self._fetch_server(user, server_id)
+        if server is None:
+            self.send_json(404, {"error": "未找到 MCP 服务器"})
+            return
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM mcp_tools WHERE server_id = ?", (server_id,))
+            conn.execute("DELETE FROM mcp_servers WHERE id = ?", (server_id,))
+        finally:
+            conn.close()
+        self.send_empty(204)
+
+    def _list_server_tools(self, user: sqlite3.Row, server_id: int):
+        server = self._fetch_server(user, server_id)
+        if server is None:
+            self.send_json(404, {"error": "未找到 MCP 服务器"})
+            return
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT tool_name, description, input_schema FROM mcp_tools WHERE server_id = ? ORDER BY id",
+                (server_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        payload = []
+        for row in rows:
+            try:
+                schema = json.loads(row["input_schema"])
+            except (json.JSONDecodeError, TypeError):
+                schema = {}
+            payload.append({"name": row["tool_name"],
+                            "description": row["description"],
+                            "input_schema": schema})
+        self.send_json(200, payload)
+
+    def _list_audit(self, user: sqlite3.Row):
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """SELECT id, server_name, tool_name, status, username, detail, created_at
+                   FROM mcp_audit WHERE class_id = ? ORDER BY id DESC LIMIT 100""",
+                (user["class_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            item["tool"] = f"{row['tool_name']}@{row['server_name']}"
+            payload.append(item)
+        self.send_json(200, payload)
+
+    # ---- 第 6 课：技能 ----
+
+    def _list_skills(self, user: sqlite3.Row):
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM skills WHERE class_id = ? ORDER BY id",
+                (user["class_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        payload = [_public_skill(row) for row in rows]
+        self.send_json(200, payload)
+
+    def _create_skill(self, user: sqlite3.Row):
+        data = self.read_json()
+        if not isinstance(data, dict):
+            self.send_json(400, {"error": "请求格式错误"})
+            return
+        name = data.get("name") if isinstance(data.get("name"), str) else ""
+        name = name.strip()
+        if not name or len(name) > 64:
+            self.send_json(400, {"error": "技能名称必填（≤64 字符）"})
+            return
+        try:
+            tools = parse_str_list(data.get("tools"), "工具")
+            keywords = parse_str_list(data.get("keywords"), "关键词")
+            validate_tool_refs(int(user["class_id"]), tools)
+        except ValueError as exc:
+            self.send_json(422, {"error": str(exc)})
+            return
+        description = data.get("description") if isinstance(data.get("description"), str) else ""
+        instructions = data.get("instructions") if isinstance(data.get("instructions"), str) else ""
+        conn = get_connection()
+        try:
+            dup = conn.execute(
+                "SELECT 1 FROM skills WHERE class_id = ? AND name = ?",
+                (user["class_id"], name),
+            ).fetchone()
+            if dup:
+                self.send_json(409, {"error": f"已存在同名技能：{name}"})
+                return
+            now = utcnow().isoformat()
+            cur = conn.execute(
+                """INSERT INTO skills
+                   (class_id, name, description, tools, instructions,
+                    keywords, created_by, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (user["class_id"], name, description.strip(),
+                 json.dumps(tools, ensure_ascii=False), instructions.strip(),
+                 json.dumps(keywords, ensure_ascii=False), user["id"], now, now),
+            )
+            skill_id = cur.lastrowid
+        finally:
+            conn.close()
+        self.send_json(201, {
+            "id": skill_id, "name": name, "description": description.strip(),
+            "tools": tools, "instructions": instructions.strip(),
+            "keywords": keywords, "created_at": now,
+        })
+
+    def _delete_skill(self, user: sqlite3.Row, skill_id: int):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM skills WHERE id = ? AND class_id = ?",
+                (skill_id, user["class_id"]),
+            ).fetchone()
+            if row is None:
+                self.send_json(404, {"error": "未找到技能"})
+                return
+            conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+        finally:
+            conn.close()
+        self.send_empty(204)
+
+    def _serve_swagger(self):
+        html = (
+            "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+            "<title>CampusClaw API 文档</title>"
+            "<link rel='stylesheet' href='https://unpkg.com/swagger-ui-dist@5/swagger-ui.css'>"
+            "</head><body><div id='swagger-ui'></div>"
+            "<script src='https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js'></script>"
+            "<script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'});</script>"
+            "</body></html>"
+        ).encode("utf-8")
+        # 仅此页面放宽 CSP 以加载 CDN 的 Swagger UI
+        relaxed = dict(SECURITY_HEADERS)
+        relaxed["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            "script-src https://unpkg.com; img-src 'self' data: https://unpkg.com; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        self._send(200, html, "text/html; charset=utf-8", relaxed)
 
     def _handle_reindex(self, user: sqlite3.Row, material_id: int):
         raw_len = int(self.headers.get("Content-Length") or 0)
@@ -716,6 +1379,25 @@ def _form_fields(parts: dict[str, dict]) -> dict[str, str]:
         except UnicodeDecodeError:
             fields[name] = ""
     return fields
+
+
+def _public_skill(row: sqlite3.Row) -> dict:
+    """技能行转响应体（tools/keywords 从 JSON 还原）。"""
+    def _load(text, fallback):
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, list) else fallback
+        except (json.JSONDecodeError, TypeError):
+            return fallback
+
+    return {
+        "id": row["id"], "name": row["name"],
+        "description": row["description"],
+        "tools": _load(row["tools"], []),
+        "instructions": row["instructions"],
+        "keywords": _load(row["keywords"], []),
+        "created_at": row["created_at"],
+    }
 
 
 def build_server(config: Config) -> ThreadingHTTPServer:

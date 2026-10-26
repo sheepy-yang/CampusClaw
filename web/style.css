@@ -355,3 +355,110 @@ button, input { font: inherit; color: inherit; }
   .topbar { padding: 10px 14px; }
   .me-user { display: none; }
 }
+
+/* ---------- 管理台 ---------- */
+.admin-section { margin-bottom: 36px; }
+.admin-section h2 { margin: 0 0 14px; font-size: 18px; }
+.admin-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 14px;
+}
+.admin-head h2 { margin: 0; }
+.admin-form {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.admin-form .field { flex: 1 1 200px; }
+.admin-form .field > span { font-weight: 600; color: var(--text); }
+.field textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  font: inherit;
+  resize: vertical;
+}
+.field textarea:focus { border-color: var(--red); }
+.field-tip { font-size: 12px; color: var(--muted); }
+.skill-tools-box {
+  display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+.skill-tool-item { font-size: 13px; }
+.toolbox-desc { color: var(--muted); font-size: 12px; }
+.toolbox-empty { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* ---------- 管理台表格 ---------- */
+.table-scroll {
+  overflow-x: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.admin-table th, .admin-table td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.admin-table th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+.admin-table tbody tr:last-child td { border-bottom: none; }
+.admin-table tbody tr:hover { background: var(--hover); }
+.admin-table .table-empty { text-align: center; color: var(--muted); padding: 18px 12px; }
+.cell-err { color: #dc2626; font-size: 12px; max-width: 240px; }
+[data-theme="dark"] .cell-err { color: #f87171; }
+.cell-ops { white-space: nowrap; }
+.btn-mini { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+
+/* ---------- 状态点 / 工具徽章 ---------- */
+.st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.st::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.st-ok { color: #16a34a; }
+.st-off { color: var(--muted); }
+.st-warn { color: #d97706; }
+.st-err { color: #dc2626; }
+[data-theme="dark"] .st-err { color: #f87171; }
+.tool-badge {
+  display: inline-flex; align-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  background: var(--card);
+  white-space: nowrap;
+}
+.ask-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+
+.ask-app-row {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 12px; font-size: 13px; color: var(--muted);
+}
+.ask-app-row select {
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--text);
+  padding: 6px 10px; font-size: 13px;
+}
+
+.import-box {
+  margin-top: 12px; border: 1px dashed var(--line);
+  border-radius: 8px; padding: 8px 12px;
+}
+.import-box summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.import-box textarea {
+  width: 100%; margin-top: 8px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px; font-size: 12px;
+  font-family: ui-monospace, monospace; resize: vertical;
+}
+.import-box .btn { margin-top: 8px; }

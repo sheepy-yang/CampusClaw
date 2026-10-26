@@ -7,3 +7,9 @@ __pycache__/
 
 # 运行时数据(SQLite 数据库、上传文件,由 scripts/init_db.py 生成)
 data/
+
+# apitest 生成的 HTML 报告不提交
+apitest/report.html
+apitest/__pycache__/
+.DS_Store
+.qdrant-initialized
