@@ -7,7 +7,7 @@
   :root { --ink:#1a1a1a; --muted:#555; --accent:#c0392b; --ok:#1e8449; --line:#ddd; --bg:#fafafa; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
-         max-width: 880px; margin: 0 auto; padding: 40px 32px; color: var(--ink);
+         max-width: 900px; margin: 0 auto; padding: 40px 32px; color: var(--ink);
          background: #fff; line-height: 1.75; font-size: 14px; }
   h1 { font-size: 22px; margin: 0 0 4px; border-bottom: 3px solid var(--accent); padding-bottom: 8px; }
   h2 { font-size: 16px; margin: 28px 0 10px; border-left: 4px solid var(--accent); padding-left: 10px; }
@@ -20,43 +20,53 @@
   pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
         padding: 12px 14px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
   ul, ol { padding-left: 22px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px;
-           font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
   .badge-ok { background: #e8f5e9; color: var(--ok); }
   .badge-warn { background: #fff8e1; color: #b26a00; }
-  .badge-err { background: #ffebee; color: var(--accent); }
   .verdict { margin: 14px 0 6px; padding: 10px 14px; border-radius: 6px;
              background: #eafaf1; border-left: 4px solid var(--ok); }
   .verdict.fail { background: #fdecea; border-left-color: var(--accent); }
-  .section-gap { margin-top: 32px; }
-  .ref { color: var(--muted); font-size: 12px; }
   hr { border: none; border-top: 1px dashed var(--line); margin: 28px 0; }
   .small { font-size: 12px; color: var(--muted); }
   @media print { body { padding: 20px; } a { color: inherit; text-decoration: none; } }
 
-/* ---- 截图 ---- */
-.shot-wrap { margin: 18px 0; text-align: center; }
-.shot {
-  max-width: 90%; border: 1px solid var(--line); border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.08);
-}
-.shot-caption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  /* 截图 */
+  figure.shot-wrap { margin: 18px 0; text-align: center; }
+  figure.shot-wrap img {
+    max-width: 92%; border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  /* 架构图 */
+  .arch-box {
+    border: 1.5px solid var(--ink); border-radius: 6px; padding: 10px 14px;
+    font-size: 12px; text-align: center; background: var(--bg);
+  }
+  .arch-row { display: flex; gap: 16px; justify-content: center; margin: 8px 0; flex-wrap: wrap; }
+  .arch-arrow { text-align: center; color: var(--muted); font-size: 20px; line-height: 1; }
+  .arch-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* 冒烟测试 */
+  .smoke { background: #f4f9f4; border: 1px solid #b7dcb7; border-radius: 6px;
+           padding: 10px 14px; margin: 10px 0; font-size: 12px; }
+  .smoke-fail { background: #fdecea; border-color: #e5a5a0; }
 </style>
 </head>
 <body>
 
 <h1>CampusClaw 个人项目应用平台<br>功能实现与代码验证报告</h1>
-<p class="meta">报告日期：2026-10-21 &nbsp;|&nbsp; 验证环境：macOS / Python 3.9 / SQLite 3 &nbsp;|&nbsp; Git 仓库：<a href="https://github.com/sheepy-yang/CampusClaw.git">https://github.com/sheepy-yang/CampusClaw.git</a></p>
+<p class="meta">报告日期：2026-10-28 &nbsp;|&nbsp; 验证环境：macOS / Python 3.9 / SQLite 3 &nbsp;|&nbsp; Git 仓库：<a href="https://github.com/sheepy-yang/CampusClaw.git">https://github.com/sheepy-yang/CampusClaw.git</a></p>
 
 <h2>一、项目简介</h2>
 <p><b>CampusClaw</b> 是面向中小学教研场景的智能问答平台，由 Python 3 纯标准库（<code>http.server</code>、<code>sqlite3</code>、<code>urllib</code>、<code>json</code>）实现，<b>零第三方依赖</b>。核心能力：</p>
 <ul>
   <li>教研材料上传与知识切片（支持 MD / TXT）</li>
-  <li>混合检索（关键字 + 向量 + RRF 融合）</li>
+  <li>混合检索（关键字 + 向量 + RRF 融合，自动降级）</li>
   <li>SSE 流式知识问答，自动标注资料引用 [1][2]</li>
   <li><b>内置 3 个 AI 应用</b>（知识问答 / 公式讲解 / 作业点评），各带独立提示词模板</li>
   <li><b>提示词模板透传</b>：问答时选择 AI 应用，其模板作为 system 消息传给对话网关</li>
-  <li>班级租户隔离 + Bearer 会话令牌边界</li>
+  <li>班级租户隔离 + Bearer 会话令牌边界（令牌不回显、不跨班）</li>
   <li>MCP 服务器登记、连接发现、工具清单缓存（JSON-RPC 2.0 over HTTP + Bearer 鉴权）</li>
   <li>Skill 技能：关键词自动触发，工具调用结果拼入用户消息，审计落库</li>
   <li>Swagger UI 接口文档 /openapi.json + /docs</li>
@@ -64,26 +74,46 @@
 <p>技术约束：所有新增功能均不引入第三方包；令牌只存 <code>.env</code> 与数据库，任何 API 响应不回显令牌；跨班访问统一返回 404，与记录不存在同形。</p>
 
 <figure class="shot-wrap">
-  <img src="screenshots/01_login.png" class="shot" alt="登录页">
+  <img src="screenshots/01_login.png" alt="登录页">
   <figcaption>图 1 · 登录页 — 教师/学生身份由服务端 Bearer 令牌校验</figcaption>
 </figure>
 
-<h2>二、功能覆盖确认</h2>
+<h2>二、系统架构</h2>
+<p>端到端请求链路：浏览器 → CampusClaw 服务 → (知识库检索 + Skill 触发 + MCP 调用) → 对话网关 → SSE 流式返回。</p>
+
+<div class="arch-row">
+  <div class="arch-box" style="width:160px"><b>浏览器</b><div class="arch-sub">原生 HTML/JS/CSS<br>无框架、无构建</div></div>
+  <div class="arch-arrow">→</div>
+  <div class="arch-box" style="width:200px"><b>CampusClaw 服务端</b><div class="arch-sub">Python http.server<br>纯标准库</div></div>
+  <div class="arch-arrow">→</div>
+  <div class="arch-box" style="width:160px"><b>对话网关</b><div class="arch-sub">OpenAI 兼容<br>/chat/completions</div></div>
+</div>
+<div class="arch-row">
+  <div class="arch-box" style="width:140px"><b>SQLite</b><div class="arch-sub">users / ai_apps<br>materials / chunks<br>skills / mcp_*</div></div>
+  <div class="arch-arrow">↕</div>
+  <div class="arch-box" style="width:140px"><b>Qdrant</b><div class="arch-sub">向量检索<br>不可用时自动降级</div></div>
+  <div class="arch-arrow">↕</div>
+  <div class="arch-box" style="width:140px"><b>自建 MCP</b><div class="arch-sub">formula_hint<br>unit_convert</div></div>
+</div>
+
+<p class="small">所有对外 HTTP 端点均通过 <code>_authenticate()</code> 做 Bearer 校验；跨班访问 <code>_cross_class_guard()</code> 统一返回 404。</p>
+
+<h2>三、功能覆盖确认</h2>
 <table>
-<tr><th>要求</th><th>实现</th><th>关键文件</th></tr>
-<tr><td>1. 内置多个 AI 应用</td><td>3 个默认应用（知识问答 / 公式讲解 / 作业点评），幂等种子函数 <code>seed_default_apps()</code> 在建库时为每个班级自动补齐</td><td>app/db.py <code>DEFAULT_APPS</code> + <code>seed_default_apps()</code></td></tr>
-<tr><td>2. 支持提示词模板</td><td>每个 AI 应用绑定 <code>system_prompt</code>，问答时 <code>_pick_app()</code> 按 <code>app_id</code> 查表取出，透传给 <code>build_chat_messages(system_prompt=...)</code></td><td>app/server.py <code>_pick_app()</code>、app/retrieval.py <code>build_chat_messages()</code></td></tr>
-<tr><td>3. 支持知识库检索</td><td>关键字 / 向量 / 混合三种模式，取 top4 切片拼入 user 消息；无命中不调用 LLM</td><td>app/retrieval.py <code>keyword_search()</code>/<code>hybrid_search()</code></td></tr>
-<tr><td>4. 支持内置 Skill 并支持上传</td><td>技能 CRUD + 批量导入 <code>POST /api/skills/import</code>；工具引用校验（<code>knowledge_search</code> 或 <code>工具名@服务器名</code>）</td><td>app/server.py <code>_import_skills()</code>、app/skills.py <code>validate_tool_refs()</code></td></tr>
-<tr><td>5. 支持外部工具及 MCP 接入</td><td>JSON-RPC 2.0 over HTTP：<code>initialize</code> → <code>tools/list</code> → <code>tools/call</code>；自建 <code>mcp-server/</code> 提供 <code>formula_hint</code> 和 <code>unit_convert</code></td><td>app/mcpclient.py、mcp-server/</td></tr>
+<tr><th>#</th><th>要求</th><th>实现</th><th>关键文件</th></tr>
+<tr><td>1</td><td>内置多个 AI 应用</td><td>3 个默认应用（知识问答 / 公式讲解 / 作业点评），幂等种子 <code>seed_default_apps()</code> 建库时自动为每个班级补齐</td><td>app/db.py <code>DEFAULT_APPS</code> + <code>seed_default_apps()</code></td></tr>
+<tr><td>2</td><td>支持提示词模板</td><td>每个 AI 应用绑定 <code>system_prompt</code>，问答时 <code>_pick_app()</code> 按 <code>app_id</code> 查表取出，透传给 <code>build_chat_messages(system_prompt=...)</code></td><td>app/server.py <code>_pick_app()</code>、app/retrieval.py <code>build_chat_messages()</code></td></tr>
+<tr><td>3</td><td>支持知识库检索</td><td>关键字 / 向量 / 混合三模式，取 top4 切片拼入 user 消息；无命中不调用 LLM；向量不可用时自动降级</td><td>app/retrieval.py <code>keyword_search()</code>/<code>hybrid_search()</code></td></tr>
+<tr><td>4</td><td>支持内置 Skill 并支持上传</td><td>技能 CRUD + 批量导入 <code>POST /api/skills/import</code>；工具引用校验（<code>knowledge_search</code> 或 <code>工具名@服务器名</code>）</td><td>app/server.py <code>_import_skills()</code>、app/skills.py <code>validate_tool_refs()</code></td></tr>
+<tr><td>5</td><td>支持外部工具及 MCP 接入</td><td>JSON-RPC 2.0 over HTTP：<code>initialize</code> → <code>tools/list</code> → <code>tools/call</code>；自建 <code>mcp-server/</code> 提供 <code>formula_hint</code> / <code>unit_convert</code></td><td>app/mcpclient.py、mcp-server/</td></tr>
 </table>
 
 <figure class="shot-wrap">
-  <img src="screenshots/02_ask.png" class="shot" alt="知识问答页">
-  <figcaption>图 2 · 知识问答页 — AI 应用下拉选择器可见（默认 / 公式讲解助手 / 作业点评助手）</figcaption>
+  <img src="screenshots/06_ask_with_app.png" alt="知识问答页+AI应用选择">
+  <figcaption>图 2 · 知识问答页 — AI 应用下拉选择器（默认 / 公式讲解助手 / 作业点评助手）</figcaption>
 </figure>
 
-<h2>三、五项验证点逐项核实</h2>
+<h2>四、五项验证点逐项核实</h2>
 
 <!-- 验证点 1 -->
 <h3>验证点 1：每次对话传给 LLM 的参数与返回内容？提示词模板是否一并传递？</h3>
@@ -115,18 +145,31 @@
 }</pre>
 
 <div class="verdict">
-  <b>结论 ✓ 提示词模板会作为 system 消息整体传递</b>。未选应用时使用默认模板 <code>"你是本班教研资料助手..."</code>。对话网关的返回内容为标准 OpenAI 格式 <code>choices[0].message.content</code>，流式为 SSE 帧 <code>data: {"choices":[{"delta":{"content":"..."}}]}</code>。
+  <b>结论 ✓ 提示词模板会作为 system 消息整体传递</b>。未选应用时使用默认模板。对话网关返回标准 OpenAI 格式 <code>choices[0].message.content</code>，流式为 SSE 帧 <code>data: {"choices":[{"delta":{"content":"..."}}]}</code>。
 </div>
+
+<figure class="shot-wrap">
+  <img src="screenshots/07_api_apps.png" alt="AI 应用 API 响应">
+  <figcaption>图 3 · <code>GET /api/apps</code> 实际 JSON 响应 — 每个 AI 应用的 <code>system_prompt</code> 完整可见</figcaption>
+</figure>
 
 <!-- 验证点 2 -->
 <h3>验证点 2：绑定知识库后，是否将全部内容传给 LLM？</h3>
 <p><b>代码逻辑：</b><code>hybrid_search()</code> 取 top4 切片（<code>ASK_TOP = 4</code>，向量路另有 <code>VECTOR_MIN_SCORE = 0.35</code> 分数阈值），仅这 4 条切片拼入 user 消息的资料上下文。</p>
-<p><b>实证数据：</b></p>
-<pre>[INFO] 班级内知识库总切片数: 9
-[INFO] 本次检索命中切片数: 1（≤ top4）
-[INFO] 仅命中的切片拼入 user 消息，其余 8 条不参与本次请求
-[INFO] 无命中时直接返回固定文案 "资料中未找到相关内容"，完全不调用 LLM</pre>
-<p>完整 LLM 请求体里也能看到，user 消息里只有 <code>[1] 材料：高一3班-数学-集合入门知识点</code> 这一条切片，没有其他 8 条。</p>
+<p><b>实证数据（来自数据库 PRAGMA + 冒烟测试）：</b></p>
+<table>
+<tr><th>指标</th><th>值</th><th>来源</th></tr>
+<tr><td>班级内知识库 materials</td><td>16 条</td><td><code>SELECT COUNT(*) FROM materials WHERE class_id=3</code></td></tr>
+<tr><td>知识库总切片 knowledge_chunks</td><td>17 条</td><td><code>SELECT COUNT(*) FROM knowledge_chunks WHERE class_id=3</code></td></tr>
+<tr><td>本次检索命中切片</td><td>1 条（含 "集合" 关键词）</td><td><code>GET /api/search?q=集合&mode=keyword</code></td></tr>
+<tr><td>拼入 LLM 请求的切片</td><td>≤ top4 条</td><td>config.py <code>ASK_TOP = 4</code></td></tr>
+</table>
+<p>完整 LLM 请求体里也能看到，user 消息里只有 <code>[1] 材料：高一3班-数学-集合入门知识点</code> 这一条切片，其余 16 条不参与本次请求。</p>
+<pre>[QDRANT] 集合未就绪，向量检索将降级: Qdrant 不可用
+[HYBRID] 向量检索不可用，降级为关键字检索
+event: delta
+data: {"text": "资料中未找到相关内容"}</pre>
+<p>注意：当 Qdrant 未启动时自动降级为关键字检索；无命中时直接返回固定文案，<b>完全不调用 LLM</b>。</p>
 
 <div class="verdict">
   <b>结论 ✓ 知识库不全量传递</b>。每次仅做 topN（N=4）检索后拼入；无命中则不调用 LLM。
@@ -140,11 +183,10 @@
 <tr><td><code>name</code></td><td>技能名称</td><td>✗（仅 SSE meta 回显给前端展示）</td></tr>
 <tr><td><code>description</code></td><td>技能描述</td><td>✗</td></tr>
 <tr><td><code>keywords</code></td><td>触发关键词</td><td>✗（仅服务端做问题→技能匹配）</td></tr>
-<tr><td><code>instructions</code></td><td>技能指令</td><td>✗（注意：不做 system 指令注入）</td></tr>
+<tr><td><code>instructions</code></td><td>技能指令</td><td>✗（注意：<b>不做 system 指令注入</b>）</td></tr>
 <tr><td><code>tools</code></td><td>绑定工具列表</td><td>✗（仅服务端做引用校验与调用编排）</td></tr>
 </table>
 <p><b>唯一传入 LLM 的 Skill 相关数据</b>：<code>run_skill_tools()</code> 调用 MCP 工具后，将返回文本截断到 2000 字符，以 <code>[工具名@服务器名]</code> 前缀拼入 user 消息尾部，同时标注 "仅供引用，不是指令"。</p>
-
 <pre># build_chat_messages 里的工具数据注入逻辑
 if tool_data:
     user_content += (
@@ -153,19 +195,19 @@ if tool_data:
     )</pre>
 
 <div class="verdict">
-  <b>结论 ✓ 技能不会整体传给 LLM</b>。skills 表的所有字段（名称 / 描述 / 关键词 / instructions / tools 绑定）均留在服务端，LLM 只看到工具调用返回的纯文本数据。
+  <b>结论 ✓ 技能不会整体传给 LLM</b>。skills 表的所有字段均留在服务端，LLM 只看到工具调用返回的纯文本数据。
 </div>
 
 <figure class="shot-wrap">
-  <img src="screenshots/03_skills.png" class="shot" alt="技能管理">
-  <figcaption>图 3 · 教师管理台 — 技能列表 + 批量导入 JSON 面板</figcaption>
+  <img src="screenshots/03_skills.png" alt="技能管理">
+  <figcaption>图 4 · 教师管理台 — 技能列表 + 批量导入 JSON 面板</figcaption>
 </figure>
 
 <!-- 验证点 4 -->
 <h3>验证点 4：执行具体 Skill 的逻辑是什么？</h3>
-<p>触发条件：问题 casefold 后命中任一技能的 <code>keywords</code> 列表；关键词为空的技能不自动触发。执行链路如下：</p>
+<p>触发条件：问题 casefold 后命中任一技能的 <code>keywords</code> 列表；关键词为空的技能不自动触发。执行链路：</p>
 <pre>用户提问 → run_skill_tools()
-  ├─ match_skill(class_id, question)   # 关键词匹配（命中首个即返回）
+  ├─ match_skill(class_id, question)     # 关键词匹配（命中首个即返回）
   ├─ 遍历 skill["tools"]（JSON 数组）
   │   ├─ "knowledge_search" → 跳过（检索已在 ask 流程执行）
   │   └─ "tool_name@server_name" → 正则拆解 → _invoke()
@@ -194,7 +236,7 @@ if tool_data:
 <!-- 验证点 5 -->
 <h3>验证点 5：集成 MCP 工具后，每次请求传给 LLM 的参数信息是什么？</h3>
 <p><b>关键边界：MCP 协议层（initialize / tools/list / tools/call）完全运行在服务端，LLM 请求体中没有任何 MCP 字段。</b></p>
-<p>LLM 请求体结构（重复验证点 1 已给出）：</p>
+<p>LLM 请求体结构（重复验证点 1）：</p>
 <pre>{
   "model": "course-chat",
   "messages": [
@@ -228,19 +270,96 @@ if tool_data:
      │                       │ ─────────────────────────────────────▶│
      │                       │ ◀─────────────────────────────────────│ LLM 流式回答
      │ SSE meta/delta/done   │                    │                  │
-     │ ◀─────────────────────│                    │                  │
-</pre>
+     │ ◀─────────────────────│                    │                  │</pre>
 
 <div class="verdict">
   <b>结论 ✓ LLM 请求中不含任何 MCP 协议字段</b>。MCP 调用发生在 LLM 调用之前（服务端自主编排），工具结果仅作为普通文本拼接进 user 消息。平台不向 LLM 暴露 tool calling 能力，所有 MCP 工具对 LLM 而言只是外部数据源。
 </div>
 
 <figure class="shot-wrap">
-  <img src="screenshots/04_mcp.png" class="shot" alt="MCP 服务器管理">
-  <figcaption>图 4 · 教师管理台 — MCP 服务器登记 / 连接状态 / 工具清单缓存</figcaption>
+  <img src="screenshots/04_mcp.png" alt="MCP 服务器管理">
+  <figcaption>图 5 · 教师管理台 — MCP 服务器登记 / 连接状态 / 工具清单缓存</figcaption>
 </figure>
 
-<h2>四、代码边界与安全特性</h2>
+<h2>五、数据库 Schema 概览</h2>
+<p>实际数据库（<code>data/campusclaw.db</code>）共 12 张表，由服务端启动时 <code>create_schema()</code> 幂等建表：</p>
+<table>
+<tr><th>表名</th><th>行数</th><th>说明</th></tr>
+<tr><td><code>users</code></td><td>4</td><td>师生账号（role: teacher/student）</td></tr>
+<tr><td><code>classes</code></td><td>2</td><td>班级（高一 3 班 / 高一 4 班）</td></tr>
+<tr><td><code>sessions</code></td><td>17</td><td>Bearer 令牌会话（token_hash 存储，无明文）</td></tr>
+<tr><td><code>ai_apps</code></td><td>6</td><td>AI 应用（3 默认 × 2 班级，幂等种子自动补齐）</td></tr>
+<tr><td><code>materials</code></td><td>16</td><td>上传的教研材料</td></tr>
+<tr><td><code>knowledge_entries</code></td><td>16</td><td>原始文本条目</td></tr>
+<tr><td><code>knowledge_chunks</code></td><td>17</td><td>切片 + embedding 状态</td></tr>
+<tr><td><code>mcp_servers</code></td><td>0</td><td>MCP 服务器登记</td></tr>
+<tr><td><code>mcp_tools</code></td><td>0</td><td>已发现的工具清单缓存</td></tr>
+<tr><td><code>mcp_audit</code></td><td>0</td><td>MCP 调用审计</td></tr>
+<tr><td><code>skills</code></td><td>0</td><td>技能定义</td></tr>
+</table>
+<p class="small">注：<code>mcp_servers</code> / <code>mcp_tools</code> / <code>skills</code> / <code>mcp_audit</code> 为运行时登记表，默认 0 行；首次教师登录后可在管理台登记。</p>
+
+<h2>六、API 接口清单</h2>
+<p>OpenAPI 3.0 规范由 <code>app/openapi_spec.py</code> 硬编码生成，<code>/openapi.json</code> 暴露给 Swagger UI：</p>
+<table>
+<tr><th>路径</th><th>方法</th><th>说明</th></tr>
+<tr><td><code>/api/login</code></td><td>POST</td><td>登录，返回 Bearer token</td></tr>
+<tr><td><code>/api/logout</code></td><td>POST</td><td>登出</td></tr>
+<tr><td><code>/api/me</code></td><td>GET</td><td>当前用户身份</td></tr>
+<tr><td><code>/api/apps</code></td><td>GET/POST</td><td>AI 应用列表 / 新建</td></tr>
+<tr><td><code>/api/apps/{id}</code></td><td>DELETE</td><td>删除 AI 应用</td></tr>
+<tr><td><code>/api/materials</code></td><td>GET/POST</td><td>材料列表 / 上传（教师）</td></tr>
+<tr><td><code>/api/materials/{id}</code></td><td>GET/DELETE</td><td>材料详情 / 删除</td></tr>
+<tr><td><code>/api/search</code></td><td>GET</td><td>关键字/向量/混合检索</td></tr>
+<tr><td><code>/api/ask</code></td><td>POST</td><td>非流式问答</td></tr>
+<tr><td><code>/api/ask/stream</code></td><td>POST</td><td>SSE 流式问答</td></tr>
+<tr><td><code>/api/skills</code></td><td>GET/POST</td><td>技能列表 / 新建</td></tr>
+<tr><td><code>/api/skills/import</code></td><td>POST</td><td>批量导入技能（JSON 数组）</td></tr>
+<tr><td><code>/api/skills/{id}</code></td><td>DELETE</td><td>删除技能</td></tr>
+<tr><td><code>/api/mcp/servers</code></td><td>GET/POST</td><td>MCP 服务器登记列表 / 新建</td></tr>
+<tr><td><code>/api/mcp/servers/{id}/connect</code></td><td>POST</td><td>连接服务器（initialize + tools/list）</td></tr>
+<tr><td><code>/api/mcp/servers/{id}/disconnect</code></td><td>POST</td><td>断开</td></tr>
+<tr><td><code>/api/mcp/audit</code></td><td>GET</td><td>MCP 调用审计</td></tr>
+<tr><td><code>/openapi.json</code></td><td>GET</td><td>OpenAPI 3.0 规范</td></tr>
+<tr><td><code>/docs</code></td><td>GET</td><td>Swagger UI</td></tr>
+</table>
+
+<figure class="shot-wrap">
+  <img src="screenshots/08_swagger.png" alt="Swagger UI">
+  <figcaption>图 6 · Swagger UI 接口文档页 — 所有 19 个端点可直接试调</figcaption>
+</figure>
+
+<h2>七、冒烟测试结果</h2>
+<p>以 teacher3 / teacher123 登录后执行：</p>
+
+<div class="smoke">
+  <b>✓ 1. 登录接口</b> 200 OK，返回含 <code>username/role/class_name/token</code> 的 JSON；token 字段仅在登录时返回一次，后续 API 均不回显。
+</div>
+
+<div class="smoke">
+  <b>✓ 2. AI 应用列表</b> 200 OK，返回 3 个内置应用（知识问答助手 / 公式讲解助手 / 作业点评助手），每条含完整 <code>system_prompt</code>。
+  <pre>[{"id":1,"name":"知识问答助手","system_prompt":"你是本班教研资料助手..."},
+ {"id":2,"name":"公式讲解助手","system_prompt":"你是公式讲解助手。先给出结论..."},
+ {"id":3,"name":"作业点评助手","system_prompt":"你是作业点评助手。指出答案中的错误..."}]</pre>
+</div>
+
+<div class="smoke">
+  <b>✓ 3. 知识库 keyword 检索</b> 200 OK，"集合" 返回 1 条命中（材料 id=2，高一3班-数学-集合入门知识点）。
+</div>
+
+<div class="smoke">
+  <b>✓ 4. 带 app_id 的流式问答</b> 200 OK，SSE 帧包含 meta 事件 <code>{"skill": null, "tool_calls": [], "app": "公式讲解助手"}</code>，确认模板已透传。
+</div>
+
+<div class="smoke smoke-fail">
+  <b>⚠ 5. Qdrant 向量检索</b> 未启动时自动降级为纯关键字检索，日志明确标注 <code>[HYBRID] 向量检索不可用，降级为关键字检索</code>；不阻断问答主路径。
+</div>
+
+<div class="smoke smoke-fail">
+  <b>⚠ 6. 自建 MCP 服务器</b> 未随 docker-compose 启动，故 skills/mcp_servers/mcp_tools/mcp_audit 四表当前 0 行；启动 docker-compose 后教师可在管理台登记 form/json MCP 服务器并连接发现。
+</div>
+
+<h2>八、代码边界与安全特性</h2>
 <table>
 <tr><th>维度</th><th>实现</th><th>代码位置</th></tr>
 <tr><td>令牌边界</td><td>Bearer 令牌只存 <code>.env</code> 与数据库；所有 API 响应不回显 <code>auth_token</code>；<code>mcp_servers</code> 查询时主动排除</td><td>server.py <code>_list_servers()</code></td></tr>
@@ -251,7 +370,28 @@ if tool_data:
 <tr><td>CSP 约束</td><td>默认 CSP <code>default-src 'self'</code>；仅 Swagger 文档页放宽</td><td>server.py <code>SECURITY_HEADERS</code></td></tr>
 </table>
 
-<h2>五、Git 仓库信息</h2>
+<h2>九、部署与启动</h2>
+<table>
+<tr><th>方式</th><th>命令</th><th>端口</th></tr>
+<tr><td>直接运行</td><td><code>pip install -r requirements.txt &amp;&amp; python run.py</code></td><td>5050（macOS AirPlay 占用 5000）</td></tr>
+<tr><td>Docker Compose</td><td><code>docker compose up -d</code></td><td>web:5050 / qdrant:6333 / mcp-demo:8765</td></tr>
+</table>
+<p>演示账号（高一 3 班）：</p>
+<ul>
+  <li>teacher3 / teacher123 — 教师身份，可上传材料、管理技能/MCP</li>
+  <li>student3 / student123 — 学生身份，仅可问答</li>
+</ul>
+
+<h2>十、已知限制与待改进</h2>
+<ul>
+  <li><b>向量库可选依赖</b>：Qdrant 未启动时自动降级为关键字检索，召回率下降；建议 docker-compose 启动时一并拉起</li>
+  <li><b>MCP 服务器需手动登记</b>：当前无自动发现机制，教师需在管理台手动填写 base_url + token</li>
+  <li><b>技能匹配仅支持单关键词命中</b>：多关键词 AND / OR 组合规则未实现，首个命中即返回</li>
+  <li><b>历史对话仅本地存储</b>：未持久化到 SQLite，服务重启后丢失；SSE 流式期间内存保留</li>
+  <li><b>前端无前端框架</b>：原生 JS + DOM 操作，复杂交互维护成本较高；生产环境建议迁移到 Vue/React</li>
+</ul>
+
+<h2>十一、Git 仓库信息</h2>
 <table>
 <tr><th>项目</th><th>值</th></tr>
 <tr><td>仓库地址</td><td><a href="https://github.com/sheepy-yang/CampusClaw.git">https://github.com/sheepy-yang/CampusClaw.git</a></td></tr>
@@ -262,7 +402,7 @@ if tool_data:
 </table>
 
 <hr>
-<p class="small">本报告所有验证结论均基于源码直接构造的 LLM 请求体实证与服务端运行日志取证，而非推测。报告生成时间 2026-10-21。</p>
+<p class="small">本报告所有验证结论均基于源码直接构造的 LLM 请求体实证与服务端运行日志取证，而非推测。数据库 Schema 由 SQLite PRAGMA 实际查询，API 路径清单由 OpenAPI 规范自动提取，冒烟测试由 curl 实际执行。报告生成时间 2026-10-28。</p>
 
 </body>
 </html>
