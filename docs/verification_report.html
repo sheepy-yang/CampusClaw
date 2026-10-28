@@ -326,7 +326,7 @@ if tool_data:
 
 <figure class="shot-wrap">
   <img src="screenshots/08_swagger.png" alt="Swagger UI">
-  <figcaption>图 6 · Swagger UI 接口文档页 — 所有 19 个端点可直接试调</figcaption>
+  <figcaption>图 6 · Swagger UI 接口文档页 — 所有 19 个端点可直接试调 <span class="small">（注：本次验证过程中修复了 CSP 头覆盖 bug：<code>_send()</code> 先发严格 CSP 再发 relaxed 导致响应含两个 CSP 头，浏览器取了严格的，Swagger CDN 资源被拦；现已修复为 extra 头优先）</span></figcaption>
 </figure>
 
 <h2>七、冒烟测试结果</h2>

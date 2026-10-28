@@ -135,8 +135,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        extra_keys = set((extra or {}).keys())
         for k, v in SECURITY_HEADERS.items():
-            self.send_header(k, v)
+            if k not in extra_keys:
+                self.send_header(k, v)
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -150,8 +152,10 @@ class Handler(BaseHTTPRequestHandler):
     def send_empty(self, status: int = 204, extra: dict | None = None):
         self.send_response(status)
         self.send_header("Content-Length", "0")
+        extra_keys = set((extra or {}).keys())
         for k, v in SECURITY_HEADERS.items():
-            self.send_header(k, v)
+            if k not in extra_keys:
+                self.send_header(k, v)
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -1301,7 +1305,7 @@ class Handler(BaseHTTPRequestHandler):
         relaxed = dict(SECURITY_HEADERS)
         relaxed["Content-Security-Policy"] = (
             "default-src 'self'; style-src 'self' 'unsafe-inline' https://unpkg.com; "
-            "script-src https://unpkg.com; img-src 'self' data: https://unpkg.com; "
+            "script-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; "
             "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
         self._send(200, html, "text/html; charset=utf-8", relaxed)
